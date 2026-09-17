@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en-ZA">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#08080d">
+<title>Msotra Gameplay Lab — Grid Guardians</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<div class="safety-band">
+  <span class="sb-icon">⚠️</span>
+  <span id="safetyText">Real Msotra heroes report from a safe distance — never approach suspects.</span>
+</div>
+
+<header class="hud">
+  <div class="brand">
+    <div class="bolt">⚡</div>
+    <div>
+      <h1>Grid Guardians</h1>
+      <small>SPAZA DEFENSE · MSOTRA GAMEPLAY LAB</small>
+    </div>
+  </div>
+  <div class="hud-stats">
+    <div class="chip ghost" id="chipGhost" title="Your anonymous handle. Authorities never see more than this.">
+      👤 <b id="ghostId">—</b>
+    </div>
+    <div class="chip rank">🎖️ <b id="rankName">Observer</b></div>
+    <div class="chip coins">🪙 <b id="coinCount">0</b> <span style="opacity:.7">MC</span></div>
+    <button class="mutebtn" id="muteBtn" title="Amapiano SFX">🔊 SFX</button>
+  </div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button role="tab" data-view="hq"    aria-selected="true">🎯 HQ</button>
+  <button role="tab" data-view="map"   aria-selected="false">🗺️ Drop Pin</button>
+  <button role="tab" data-view="intel" aria-selected="false">💬 Kasi Intel</button>
+  <button role="tab" data-view="proof" aria-selected="false">📸 Paparazzi</button>
+  <button role="tab" data-view="wallet" aria-selected="false">🪙 Wallet</button>
+  <button role="tab" data-view="hood"  aria-selected="false">🏆 Hood Board</button>
+  <button role="tab" data-view="ghost" aria-selected="false">👻 Ghost Agent</button>
+  <button role="tab" data-view="blackout" aria-selected="false">🔌 Blackout</button>
+</nav>
+
+<main>
+
+  <!-- ══ HQ ══════════════════════════════════════════════════════════════ -->
+  <section class="view active" id="view-hq">
+    <div class="panel">
+      <h2>Mission Briefing <span class="tag">LEVEL 1</span></h2>
+      <p class="sub">
+        Cables are walking out of Soweto at night and whole blocks go dark. You are a
+        <b>Msotra Agent</b> — invisible, untraceable, and paid in <b>Msotra Coins</b> for
+        real intel that City Power and SAPS can act on. Complete a Stealth Quest in three
+        moves: <b>drop the pin</b>, <b>drop the intel</b>, <b>drop the proof</b>.
+      </p>
+    </div>
+
+    <div class="panel">
+      <h2>Agent Setup <span class="tag">NO REAL NAMES</span></h2>
+      <div class="grid2">
+        <label class="fld"><span>Callsign (stays on this device)</span>
+          <input id="callsign" placeholder="e.g. Ma2000, Shoz, GridCat" maxlength="24" autocomplete="off"></label>
+        <label class="fld"><span>Home turf</span>
+          <select id="homeZone"></select></label>
+      </div>
+      <button class="btn teal" id="enlistBtn">Enlist as Msotra Agent</button>
+      <p class="sub" id="enlistNote"></p>
+    </div>
+
+    <div class="grid3" id="hqStats"></div>
+
+    <div class="panel">
+      <h2>Live Intel Feed <span class="tag">ANONYMISED</span></h2>
+      <div class="feed" id="feed"><p class="sub">No drops yet. Be the first Guardian tonight.</p></div>
+    </div>
+
+    <div class="panel">
+      <h2>Safety Protocol <span class="tag">NON-NEGOTIABLE</span></h2>
+      <ul class="sub" id="safetyRules" style="padding-left:18px;margin:8px 0 0"></ul>
+      <div class="grid2" style="margin-top:12px" id="hotlines"></div>
+    </div>
+  </section>
+
+  <!-- ══ MAP ═════════════════════════════════════════════════════════════ -->
+  <section class="view" id="view-map">
+    <div class="panel">
+      <h2>Mystery Geolocation <span class="tag">QUEST 1 / 3</span></h2>
+      <p class="sub">Tap the exact spot on the Soweto grid. Your pin stays precise for us —
+        authorities only ever receive a <b>150 m blurred</b> coordinate so nobody can work out
+        where you were standing.</p>
+    </div>
+    <div class="map-wrap" id="mapWrap"></div>
+    <div class="legend">
+      <span><i style="background:#38e07b"></i>Grid healthy</span>
+      <span><i style="background:#ffb703"></i>Under strain</span>
+      <span><i style="background:#ff4d4d"></i>Critical / dark</span>
+      <span><i style="background:#ff2e88"></i>Your pin</span>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <div class="grid2">
+        <label class="fld"><span>What did you see?</span>
+          <select id="category">
+            <option value="cable_theft">Cable theft in progress / fresh dig</option>
+            <option value="substation_vandalism">Mini-substation vandalised</option>
+            <option value="open_chamber">Open chamber / exposed cable</option>
+            <option value="illegal_connection">Izinyoka illegal connection</option>
+            <option value="streetlight_out">Streetlights out</option>
+          </select></label>
+        <div>
+          <label class="fld" style="margin-bottom:6px"><span>Severity</span></label>
+          <div class="sevrow" id="sevRow">
+            <button data-sev="1">1</button><button data-sev="2">2</button>
+            <button data-sev="3" aria-pressed="true">3</button>
+            <button data-sev="4">4</button><button data-sev="5">5</button>
+          </div>
+        </div>
+      </div>
+      <button class="btn" id="toIntelBtn">Next: Drop the Kasi Intel →</button>
+    </div>
+  </section>
+
+  <!-- ══ INTEL CHAT ══════════════════════════════════════════════════════ -->
+  <section class="view" id="view-intel">
+    <div class="panel">
+      <h2>Kasi Intel Drop <span class="tag">QUEST 2 / 3</span></h2>
+      <p class="sub">Talk to Control like it's a WhatsApp group. Type fast — the Ghost Agent
+        scrubs your words live before anything is stored or forwarded.</p>
+    </div>
+    <div class="chat" id="chat"></div>
+    <div class="quick" id="quickReplies"></div>
+    <div class="composer">
+      <input id="chatInput" placeholder="Type your intel…" autocomplete="off">
+      <button id="chatSend" title="Send">➤</button>
+    </div>
+    <div class="redact-hint" id="redactHint"></div>
+    <div class="panel" style="margin-top:12px">
+      <button class="btn" id="toProofBtn">Next: Upload the Proof →</button>
+    </div>
+  </section>
+
+  <!-- ══ PROOF ═══════════════════════════════════════════════════════════ -->
+  <section class="view" id="view-proof">
+    <div class="panel">
+      <h2>Paparazzi Stealth Quest <span class="tag">QUEST 3 / 3</span></h2>
+      <p class="sub"><b>From cover only.</b> Never raise your phone in front of suspects.
+        Every photo is rebuilt byte-by-byte on arrival — EXIF, GPS and camera metadata are
+        destroyed, not hidden.</p>
+    </div>
+    <div class="dropzone" id="dropzone">
+      <span class="big">📸</span>
+      <b>Tap to capture or choose a photo</b>
+      <p class="sub">Vandalised mini-sub · stolen cable · open chamber</p>
+      <input type="file" id="fileInput" accept="image/*" capture="environment" multiple hidden>
+    </div>
+    <div class="shots" id="shots"></div>
+
+    <div class="panel" style="margin-top:12px">
+      <h2>Transmit Package</h2>
+      <div id="draftSummary" class="sub"></div>
+      <button class="btn mag" id="transmitBtn" style="margin-top:12px;width:100%">
+        ⚡ Transmit to City Power / SAPS
+      </button>
+      <p class="sub" style="text-align:center;margin-top:9px">
+        Ghost Agent is <b style="color:var(--teal)">ARMED</b> — zero identifiers leave this device.
+      </p>
+    </div>
+  </section>
+
+  <!-- ══ WALLET ══════════════════════════════════════════════════════════ -->
+  <section class="view" id="view-wallet">
+    <div class="coinhero">
+      <div class="big" id="walletBalance">0</div>
+      <small>MSOTRA COINS</small>
+      <div class="progress">
+        <div class="lbls"><span id="rankFrom">Observer</span><span id="rankTo">Street Captain</span></div>
+        <div class="bar"><i id="rankBar" style="width:0%"></i></div>
+        <p class="sub" id="rankHint" style="margin-top:7px"></p>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <h2>Redeem for Real <span class="tag">GATEWAY</span></h2>
+      <p class="sub">Coins convert to airtime, data and Eskom prepaid tokens. Vouchers are
+        issued to your <b>ghost handle</b> — no phone number is stored to receive them.</p>
+      <div class="store" id="store" style="margin-top:12px"></div>
+      <div id="voucherOut"></div>
+    </div>
+    <div class="panel">
+      <h2>Coin Ledger <span class="tag">APPEND-ONLY</span></h2>
+      <div class="ledger" id="ledger"><p class="sub">No transactions yet.</p></div>
+    </div>
+    <div class="panel">
+      <h2>Control Room Simulator <span class="tag">DEMO</span></h2>
+      <p class="sub">In production City Power / SAPS confirm a case and the payout fires
+        automatically. For the judges, confirm one here:</p>
+      <div id="pendingCases" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+  <!-- ══ HOOD BOARD ══════════════════════════════════════════════════════ -->
+  <section class="view" id="view-hood">
+    <div class="vs" id="vsBanner"></div>
+    <div class="panel">
+      <h2>Hood Leaderboard <span class="tag">LIVE</span></h2>
+      <table class="board"><thead><tr>
+        <th></th><th>Crew</th><th>Verified</th><th>Coins</th><th>Grid</th>
+      </tr></thead><tbody id="crewBoard"></tbody></table>
+    </div>
+    <div class="panel">
+      <h2>Zone Heat <span class="tag">GEOSPATIAL</span></h2>
+      <table class="board"><thead><tr>
+        <th>Zone</th><th>Landmark</th><th>Drops</th><th>Verified</th><th>Grid health</th>
+      </tr></thead><tbody id="zoneBoard"></tbody></table>
+    </div>
+    <div class="panel">
+      <h2>Top Agents <span class="tag">GHOST HANDLES ONLY</span></h2>
+      <table class="board"><thead><tr>
+        <th></th><th>Agent</th><th>Rank</th><th>XP</th><th>Verified</th>
+      </tr></thead><tbody id="agentBoard"></tbody></table>
+    </div>
+  </section>
+
+  <!-- ══ GHOST AGENT ═════════════════════════════════════════════════════ -->
+  <section class="view" id="view-ghost">
+    <div class="panel">
+      <h2>Ghost Agent <span class="tag">ANONYMITY MODE</span></h2>
+      <p class="sub">Retaliation is the reason people don't report. So the pipeline is built so
+        that <b>we could not identify you even if we were forced to try</b>. Five stages run on
+        every single drop:</p>
+      <div id="stages" style="margin-top:12px"></div>
+    </div>
+    <div class="panel">
+      <h2>Try the Scrubber <span class="tag">LIVE</span></h2>
+      <p class="sub">Type anything an anxious reporter might type — a phone number, an ID
+        number, "its me Thabo from no 4432" — and watch what survives.</p>
+      <label class="fld" style="margin-top:10px">
+        <textarea id="scrubIn" rows="3">Hi its me Thabo from no 4432 Vilakazi, call me on 082 555 1234 or thabo@gmail.com, my brother saw the bakkie NX 12 AB GP cutting cable</textarea>
+      </label>
+      <div class="seen-split">
+        <div class="box raw"><h4>What you typed (stays on our side)</h4><div id="scrubRaw"></div></div>
+        <div class="box safe"><h4>What City Power receives</h4><div id="scrubSafe"></div></div>
+      </div>
+      <div class="tagrow" id="scrubTags" style="margin-top:9px"></div>
+    </div>
+    <div class="panel">
+      <h2>Sanitisation Audit <span class="tag">EVIDENCE TRAIL</span></h2>
+      <div id="auditOut" class="sub">Loading…</div>
+    </div>
+  </section>
+
+  <!-- ══ BLACKOUT ════════════════════════════════════════════════════════ -->
+  <section class="view" id="view-blackout">
+    <div class="panel">
+      <h2>Blackout Escape Room <span class="tag">LIVE EVENT · 5 MIN</span></h2>
+      <p class="sub">Zone 9 just went dark. Your team has five minutes to find the clues and
+        look up the real community reporting numbers to restore the lights. Works fully offline
+        at a community centre.</p>
+      <label class="fld" style="margin-top:12px"><span>Team name</span>
+        <input id="teamName" placeholder="e.g. Meadowlands Maniacs" maxlength="40"></label>
+      <button class="btn" id="startEscape">🔌 Cut the power — start the clock</button>
+    </div>
+    <div class="blackout" id="escapeStage" hidden>
+      <div class="timer" id="timer">5:00</div>
+      <div class="lights" id="lights"><i></i><i></i><i></i></div>
+      <div id="clues" style="text-align:left;max-width:640px;margin:0 auto"></div>
+      <button class="btn ghost sm" id="abortEscape" style="margin-top:10px">Abort drill</button>
+    </div>
+    <div class="panel" id="escapeBoardPanel" hidden>
+      <h2>Drill Results</h2>
+      <table class="board"><thead><tr><th>Team</th><th>Clues</th><th>Lights</th><th>Time left</th></tr></thead>
+      <tbody id="escapeBoard"></tbody></table>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  Msotra Gameplay Lab · Grid Guardians — a civic-reporting game for Soweto.<br>
+  Not an emergency service. Life in danger? Call <b>10111</b>. Power out? <b>011 375 5555</b>.
+</footer>
+
+<script src="/sfx.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

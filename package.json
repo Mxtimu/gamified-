@@ -1,0 +1,15 @@
+﻿{
+  "name": "msotra-gameplay-lab",
+  "version": "1.0.0",
+  "description": "Spaza Defense & Grid Guardians - gamified civic infrastructure reporting for Soweto",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.5.0" },
+  "scripts": {
+    "start": "node --no-warnings server.mjs",
+    "dev": "node --no-warnings --watch server.mjs",
+    "seed": "node --no-warnings scripts/seed.mjs",
+    "test": "node --no-warnings --test tests/pipeline.test.mjs"
+  },
+  "dependencies": {}
+}

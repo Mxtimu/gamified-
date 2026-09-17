@@ -1,0 +1,7 @@
+﻿node_modules/
+data/msotra.db
+data/msotra.db-wal
+data/msotra.db-shm
+data/media/*
+!data/media/.gitkeep
+*.log
