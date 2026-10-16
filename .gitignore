@@ -1,4 +1,4 @@
-﻿node_modules/
+node_modules/
 data/msotra.db
 data/msotra.db-wal
 data/msotra.db-shm

@@ -3,6 +3,7 @@
 //  Zero-dependency Node server: static frontend + civic-reporting API +
 //  Ghost Agent sanitisation boundary + Msotra Coin economy.
 // ═══════════════════════════════════════════════════════════════════════════
+import './src/preflight.mjs'; // must run before node:sqlite is imported
 import { createServer } from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
 import { extname, join, normalize, dirname } from 'node:path';

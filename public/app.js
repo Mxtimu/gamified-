@@ -37,7 +37,11 @@ const py = (lat) => ((LAT_TOP - lat) / (LAT_TOP - LAT_BOT)) * MH;
 const toLng = (x) => LNG_L + (x / MW) * (LNG_R - LNG_L);
 const toLat = (y) => LAT_TOP - (y / MH) * (LAT_TOP - LAT_BOT);
 
-const healthColour = (h) => (h >= 75 ? '#38e07b' : h >= 45 ? '#ffb703' : '#ff4d4d');
+/** Reads a theme token at runtime, so the map follows the active theme. */
+const cssVar = (name) =>
+  getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const healthColour = (h) =>
+  h >= 75 ? cssVar('--ok') : h >= 45 ? cssVar('--amber') : cssVar('--danger');
 const CAT_LABEL = {
   cable_theft: 'Cable theft', substation_vandalism: 'Substation vandalised',
   open_chamber: 'Open chamber', illegal_connection: 'Illegal connection',
@@ -67,6 +71,36 @@ $$('nav.tabs button').forEach((b) => b.addEventListener('click', () => { SFX.pla
 $('#muteBtn').addEventListener('click', (e) => {
   e.target.textContent = SFX.toggle() ? '🔊 SFX' : '🔇 SFX';
 });
+
+// ── theme: night ops (default) ⇄ daylight ───────────────────────────────
+// Dark is the brand identity. Daylight Mode exists because agents report
+// outdoors in hard sun, where a dark screen is genuinely unreadable.
+const THEME_KEY = 'msotra.theme';
+const activeTheme = () =>
+  document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+
+function applyTheme(theme) {
+  const light = theme === 'light';
+  document.documentElement.dataset.theme = light ? 'light' : 'dark';
+  try { localStorage.setItem(THEME_KEY, light ? 'light' : 'dark'); } catch { /* private mode */ }
+
+  const btn = $('#themeBtn');
+  btn.textContent = light ? '🌙 Night Ops' : '☀️ Daylight';
+  btn.setAttribute('aria-pressed', String(light));
+  btn.title = light ? 'Switch back to night ops (dark)' : 'Switch to daylight mode (light)';
+  $('#themeColor')?.setAttribute('content', light ? '#f5f3ef' : '#08080d');
+
+  // The map reads its fills from theme tokens at paint time, so redraw it.
+  if (S.zones.length) renderMap();
+}
+
+$('#themeBtn').addEventListener('click', () => {
+  SFX.play('tick');
+  applyTheme(activeTheme() === 'light' ? 'dark' : 'light');
+});
+
+// Sync the button with whatever the pre-paint script in index.html applied.
+applyTheme(activeTheme());
 
 // ── bootstrap ─────────────────────────────────────────────────────────────
 async function boot() {
@@ -98,7 +132,7 @@ function renderHud() {
   $('#rankName').textContent = a ? `${a.badge} ${a.rank}` : 'Observer';
   $('#coinCount').textContent = a ? a.coins : 0;
   $('#enlistNote').innerHTML = a
-    ? `Enlisted. Authorities will only ever see <b class="mono" style="color:var(--teal)">${a.ghost_id}</b> — never "${a.callsign}", never a number.`
+    ? `Enlisted. Authorities will only ever see <b class="mono" style="color:var(--teal-text)">${a.ghost_id}</b> — never "${a.callsign}", never a number.`
     : 'Your callsign never leaves this device. We generate an unlinkable ghost handle for you.';
 }
 
@@ -133,7 +167,7 @@ function renderMap() {
   const grid = links.filter(([a, b]) => zoneById(a) && zoneById(b)).map(([a, b]) => {
     const A = zoneById(a), B = zoneById(b);
     return `<line x1="${px(A.lng)}" y1="${py(A.lat)}" x2="${px(B.lng)}" y2="${py(B.lat)}"
-      stroke="#23233a" stroke-width="2" stroke-dasharray="7 6"/>`;
+      class="map-link" stroke-width="2" stroke-dasharray="7 6"/>`;
   }).join('');
 
   const nodes = S.zones.map((z) => {
@@ -142,10 +176,10 @@ function renderMap() {
     return `<g class="zone-hit" data-zone="${z.id}" data-lat="${z.lat}" data-lng="${z.lng}">
       ${hot ? `<circle cx="${x}" cy="${y}" r="9" fill="${c}" opacity=".5" class="pulse"/>` : ''}
       <circle class="zone-node" cx="${x}" cy="${y}" r="${9 + Math.min(6, z.reports)}"
-        fill="${c}" opacity=".9" stroke="#08080d" stroke-width="2"/>
+        fill="${c}" opacity=".9" stroke-width="2"/>
       <text class="zone-label" x="${x}" y="${y - 17}" text-anchor="middle">${z.name}</text>
-      <text class="zone-label" x="${x}" y="${y + 26}" text-anchor="middle"
-        style="font-size:9px;fill:#6f6f8c">${z.grid_health}% grid · ${z.reports} drops</text>
+      <text class="zone-label zone-sub" x="${x}" y="${y + 26}"
+        text-anchor="middle">${z.grid_health}% grid · ${z.reports} drops</text>
     </g>`;
   }).join('');
 
@@ -155,21 +189,21 @@ function renderMap() {
       <filter id="glow"><feGaussianBlur stdDeviation="5" result="b"/>
         <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
       <pattern id="mesh" width="50" height="50" patternUnits="userSpaceOnUse">
-        <path d="M50 0H0V50" fill="none" stroke="#11111c" stroke-width="1"/></pattern>
+        <path d="M50 0H0V50" fill="none" class="map-mesh-line" stroke-width="1"/></pattern>
     </defs>
+    <rect width="${MW}" height="${MH}" class="map-canvas"/>
     <rect width="${MW}" height="${MH}" fill="url(#mesh)"/>
     <path d="M0 ${MH * 0.78} Q ${MW * 0.3} ${MH * 0.68} ${MW * 0.55} ${MH * 0.83}
-      T ${MW} ${MH * 0.72}" fill="none" stroke="#16263a" stroke-width="9" opacity=".8"/>
-    <text x="16" y="${MH - 14}" class="zone-label" style="fill:#2c3d52;font-size:10px">KLIPSPRUIT RIVER</text>
+      T ${MW} ${MH * 0.72}" fill="none" class="map-river" stroke-width="9" opacity=".8"/>
+    <text x="16" y="${MH - 14}" class="zone-label map-river-label">KLIPSPRUIT RIVER</text>
     <g transform="translate(${px(27.9128)},${py(-26.2427)})">
-      <path d="M-13 0 l4 -30 h18 l4 30 z" fill="#1c1c2b" stroke="#3a3a55"/>
-      <path d="M13 0 l-4 -30 h-18" fill="none" stroke="#3a3a55"/>
-      <text class="zone-label" y="14" text-anchor="middle" style="font-size:8px;fill:#5a5a78">ORLANDO TOWERS</text>
+      <path d="M-13 0 l4 -30 h18 l4 30 z" class="map-tower"/>
+      <path d="M13 0 l-4 -30 h-18" fill="none" class="map-tower-line"/>
+      <text class="zone-label map-tower-label" y="14" text-anchor="middle">ORLANDO TOWERS</text>
     </g>
     ${grid}${nodes}
     <g id="pinLayer"></g>
-    <text x="${MW - 14}" y="24" text-anchor="end" class="zone-label"
-      style="fill:#3a3a55;font-size:10px">SOWETO OPERATIONAL GRID · TAP TO PIN</text>
+    <text x="${MW - 14}" y="24" text-anchor="end" class="zone-label map-hint">SOWETO OPERATIONAL GRID · TAP TO PIN</text>
   </svg>
   <div class="map-readout" id="mapReadout">Tap anywhere to drop your intel pin.</div>`;
 
@@ -193,10 +227,10 @@ function paintPin() {
   const x = px(S.pin.lng), y = py(S.pin.lat);
   $('#pinLayer').innerHTML = `
     <g class="pin-drop" transform="translate(${x},${y})">
-      <circle r="24" fill="#ff2e88" opacity=".16"/>
-      <circle r="6" fill="#ff2e88" stroke="#fff" stroke-width="2"/>
-      <path d="M0 -8 v-26" stroke="#ff2e88" stroke-width="2"/>
-      <circle cy="-34" r="6" fill="#ff2e88"/>
+      <circle r="24" class="pin-halo"/>
+      <circle r="6" class="pin-dot"/>
+      <path d="M0 -8 v-26" class="pin-stem"/>
+      <circle cy="-34" r="6" class="pin-head"/>
     </g>`;
   // Nearest zone, computed client-side for instant feedback.
   let best = null, bestD = Infinity;
@@ -209,7 +243,7 @@ function paintPin() {
   $('#mapReadout').innerHTML = `
     Pin: <b>${S.pin.lat.toFixed(5)}, ${S.pin.lng.toFixed(5)}</b> ·
     zone <b>${best.name}</b> (${Math.round(bestD)} m from ${best.landmark})<br>
-    <span style="color:var(--teal)">Authorities will receive ${fz(S.pin.lat)}, ${fz(S.pin.lng)} — blurred to 150 m.</span>`;
+    <span style="color:var(--teal-text)">Authorities will receive ${fz(S.pin.lat)}, ${fz(S.pin.lng)} — blurred to 150 m.</span>`;
   renderDraft();
 }
 
@@ -344,7 +378,7 @@ function renderDraft() {
       <div class="stat"><b>${S.media.length}</b><span>Photos</span></div>
     </div>
     <b>${CAT_LABEL[S.category]}</b> · severity ${S.severity}/5 · sender <span class="mono"
-      style="color:var(--teal)">${agentLine}</span>`;
+      style="color:var(--teal-text)">${agentLine}</span>`;
   $('#transmitBtn').disabled = !S.pin;
 }
 
@@ -393,11 +427,11 @@ function showSafetyLoader() {
   loaderEl.className = 'modal-wrap';
   loaderEl.innerHTML = `<div class="modal" style="text-align:center;max-width:430px">
     <div style="font-size:46px">👻</div>
-    <h2 style="color:var(--amber)">Ghosting your data</h2>
+    <h2 style="color:var(--amber-text)">Ghosting your data</h2>
     <p class="sub">Stripping EXIF & GPS · blurring your pin · redacting names & numbers ·
       building the anonymous payload.</p>
     <div class="bar" style="margin-top:14px"><i style="width:0;animation:none" id="ldBar"></i></div>
-    <p class="sub" style="margin-top:16px;color:#ffd77a"><b>Real Msotra heroes report from a safe
+    <p class="sub" style="margin-top:16px;color:var(--safety-ink)"><b>Real Msotra heroes report from a safe
       distance — never approach suspects.</b></p></div>`;
   document.body.append(loaderEl);
   requestAnimationFrame(() => { const b = $('#ldBar'); if (b) b.style.width = '100%'; });
@@ -430,13 +464,13 @@ function ghostReceipt(res) {
 
   wrap.innerHTML = `<div class="modal">
     <h2>👻 Ghost Agent Receipt</h2>
-    <p class="sub">Case <b class="mono" style="color:var(--amber)">${res.report.ref}</b> ·
+    <p class="sub">Case <b class="mono" style="color:var(--amber-text)">${res.report.ref}</b> ·
       ${res.report.zone} (${res.report.crew}) · forwarded to
       <b>${g.forwarded_to.length ? g.forwarded_to.join(' + ').toUpperCase() : 'NOBODY — BLOCKED'}</b></p>
 
     <div style="margin-top:12px">
       <div class="stage"><div class="n">1</div><div><div class="t">Identity pseudonymised</div>
-        <div class="d">Authorities see: <b style="color:var(--teal)">${g.agent_seen_by_authorities}</b>.
+        <div class="d">Authorities see: <b style="color:var(--teal-text)">${g.agent_seen_by_authorities}</b>.
         Your callsign and ghost handle were never placed in the payload.</div></div></div>
       <div class="stage"><div class="n">2</div><div><div class="t">Narrative scrubbed</div>
         <div class="d">Rules fired on your words:</div><div class="tagrow">${rules}</div></div></div>
@@ -447,7 +481,7 @@ function ghostReceipt(res) {
         <div class="d">Blocks removed from your images:</div><div class="tagrow">${media}</div></div></div>
       <div class="stage"><div class="n">5</div><div><div class="t">Allowlist + tripwire</div>
         <div class="d">${g.allowlist.length} approved fields only.
-        Tripwire: <b style="color:${g.tripwire.passed ? 'var(--teal)' : 'var(--danger)'}">
+        Tripwire: <b style="color:${g.tripwire.passed ? 'var(--teal-text)' : 'var(--danger)'}">
         ${g.tripwire.passed ? 'PASSED' : 'BLOCKED — ' + (g.tripwire.violations || []).join(', ')}</b></div></div></div>
     </div>
 
@@ -455,7 +489,7 @@ function ghostReceipt(res) {
     <pre class="payload">${JSON.stringify(g.outbound_payload, null, 2)}</pre>
 
     <p class="sub" style="margin-top:14px">Pending payout on verification:
-      <b style="color:var(--amber)">${res.reward_pending.coins} Msotra Coins</b>
+      <b style="color:var(--amber-text)">${res.reward_pending.coins} Msotra Coins</b>
       + ${res.reward_pending.xp} XP.</p>
     <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
       <button class="btn teal" id="rcVerify">Simulate City Power verification</button>
@@ -507,7 +541,7 @@ async function renderFeed() {
         <div style="color:var(--dim);font-size:11px">${r.ref} · sev ${r.severity}/5 ·
           ${r.media} photo${r.media === 1 ? '' : 's'} · anonymous</div>
       </div>
-      ${r.coins_awarded ? `<b style="color:var(--amber)">+${r.coins_awarded}</b>` : ''}
+      ${r.coins_awarded ? `<b style="color:var(--amber-text)">+${r.coins_awarded}</b>` : ''}
     </div>`).join('') : '<p class="sub">No drops yet. Be the first Guardian tonight.</p>';
 }
 
@@ -552,7 +586,7 @@ async function loadWallet() {
   const { feed } = await api('/api/feed');
   const pending = feed.filter((r) => r.status === 'forwarded' || r.status === 'submitted');
   $('#pendingCases').innerHTML = pending.length ? pending.slice(0, 6).map((r) => `
-    <div class="row" style="display:flex;gap:9px;align-items:center;padding:8px 0;border-bottom:1px solid #1d1d2c">
+    <div class="row" style="display:flex;gap:9px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line2)">
       <span class="badge ${r.status}">${r.status}</span>
       <div style="flex:1"><b>${r.ref}</b> <span style="color:var(--dim)">${r.zone} ·
         ${CAT_LABEL[r.category] || r.category}</span></div>
@@ -603,7 +637,7 @@ async function loadBoards() {
       <td><b>${c.crew}</b><div class="bar" style="margin-top:5px">
         <i style="width:${(c.score / maxScore) * 100}%"></i></div></td>
       <td>${c.verified}/${c.reports}</td>
-      <td style="color:var(--amber);font-weight:900">${c.coins}</td>
+      <td style="color:var(--amber-text);font-weight:900">${c.coins}</td>
       <td style="color:${healthColour(c.grid_health)}">${c.grid_health}%</td></tr>`).join('');
 
   $('#zoneBoard').innerHTML = b.zones.map((z) => `
@@ -615,7 +649,7 @@ async function loadBoards() {
   $('#agentBoard').innerHTML = b.agents.length ? b.agents.map((a, i) => `
     <tr class="${a.callsign === S.callsign ? 'me' : ''}">
       <td><div class="pos p${i + 1}">${i + 1}</div></td>
-      <td><span class="mono">${a.ghost_id}</span>${a.callsign === S.callsign ? ' <b style="color:var(--amber)">(you)</b>' : ''}
+      <td><span class="mono">${a.ghost_id}</span>${a.callsign === S.callsign ? ' <b style="color:var(--amber-text)">(you)</b>' : ''}
         <div style="color:var(--dim);font-size:11px">${a.home_zone || 'unassigned'}</div></td>
       <td>${a.rank}</td><td>${a.xp}</td><td>${a.verified || 0}</td></tr>`).join('')
     : '<tr><td colspan="5" style="color:var(--dim)">No agents enlisted yet.</td></tr>';
@@ -654,7 +688,7 @@ async function runScrub() {
 async function loadAudit() {
   const a = await api('/api/ghost/audit');
   $('#auditOut').innerHTML = `
-    <b style="color:var(--teal);font-size:16px">${a.totals.redactions}</b> redactions logged as
+    <b style="color:var(--teal-text);font-size:16px">${a.totals.redactions}</b> redactions logged as
     evidence across all drops. Outbound allowlist: <span class="mono"
     style="color:var(--dim)">${a.allowlist.join(', ')}</span>
     ${a.summary.length ? `<table class="board" style="margin-top:10px">

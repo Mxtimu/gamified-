@@ -3,7 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#08080d">
+<meta name="theme-color" content="#08080d" id="themeColor">
+<script>
+  // Applied before first paint so the chosen theme never flashes the other one.
+  try {
+    var t = localStorage.getItem('msotra.theme');
+    if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  } catch (e) { /* private mode — fall back to the dark default */ }
+</script>
 <title>Msotra Gameplay Lab — Grid Guardians</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="/styles.css">
@@ -29,6 +36,8 @@
     </div>
     <div class="chip rank">🎖️ <b id="rankName">Observer</b></div>
     <div class="chip coins">🪙 <b id="coinCount">0</b> <span style="opacity:.7">MC</span></div>
+    <button class="mutebtn" id="themeBtn" title="Switch between night ops and daylight mode"
+      aria-pressed="false">☀️ Daylight</button>
     <button class="mutebtn" id="muteBtn" title="Amapiano SFX">🔊 SFX</button>
   </div>
 </header>
@@ -94,10 +103,10 @@
     </div>
     <div class="map-wrap" id="mapWrap"></div>
     <div class="legend">
-      <span><i style="background:#38e07b"></i>Grid healthy</span>
-      <span><i style="background:#ffb703"></i>Under strain</span>
-      <span><i style="background:#ff4d4d"></i>Critical / dark</span>
-      <span><i style="background:#ff2e88"></i>Your pin</span>
+      <span><i class="ok"></i>Grid healthy</span>
+      <span><i class="warn"></i>Under strain</span>
+      <span><i class="bad"></i>Critical / dark</span>
+      <span><i class="pin"></i>Your pin</span>
     </div>
     <div class="panel" style="margin-top:12px">
       <div class="grid2">
