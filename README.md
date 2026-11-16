@@ -144,16 +144,33 @@ races to solve three clues — each one forces them to look up a *real* communit
 number. Every clue solved switches a light back on; all three restores power and pays the
 captain 60 coins. Runs with no internet, results go to a drill leaderboard.
 
+## 🗺️ Street map (OpenStreetMap)
+
+The Drop Pin tab defaults to a real OpenStreetMap street map, with a toggle back to the
+stylised **Grid map**. The street map shows the dashed 150 m cell around your pin, which is
+exactly what City Power receives.
+
+- **The reporter's browser never talks to OSM.** Tiles are fetched by our server at
+  `/tiles/{z}/{x}/{y}.png`. Otherwise OSM's tile servers would log the reporter's IP address
+  next to the exact streets they zoomed into.
+- **Cached on disk** in `data/tiles/`. Areas viewed once keep working offline.
+- **Limited to the Soweto area, zoom levels 11–18**, so the proxy can't be abused as a
+  general tile downloader (OSM's [tile usage policy](https://operations.osmfoundation.org/policies/tiles/)
+  forbids bulk downloading).
+- **Offline:** if no tiles load at all, the app switches to the Grid map automatically.
+- Leaflet 1.9.4 is in `public/vendor/leaflet/`, so there's still no `npm install`.
+
 ## Architecture
 
 ```
-server.mjs            zero-dep HTTP: static + JSON API + SSE live stream
+server.mjs            zero-dep HTTP: static + JSON API + SSE live stream + OSM tile proxy
 src/preflight.mjs     Node version guard with a human-readable failure
 src/ghost.mjs         the Ghost Agent pipeline (the heavy lift)
 src/db.mjs            10-table relational schema + haversine zone queries
 src/economy.mjs       ledger, ranks, redemption, leaderboard aggregates
 public/index.html     8-tab single-page app
 public/app.js         SVG map projection, chat, upload, wallet, boards, escape room
+public/vendor/leaflet Leaflet 1.9.4 (vendored, BSD-2) for the street map
 public/sfx.js         Amapiano log drum + Kwaito stabs, synthesised in WebAudio (no assets)
 tests/pipeline.test.mjs
 ```

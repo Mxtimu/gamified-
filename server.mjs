@@ -5,11 +5,11 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import './src/preflight.mjs'; // must run before node:sqlite is imported
 import { createServer } from 'node:http';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { extname, join, normalize, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { db, MEDIA_DIR, nearestZone, logSanitization } from './src/db.mjs';
+import { db, DATA_DIR, MEDIA_DIR, nearestZone, logSanitization } from './src/db.mjs';
 import {
   ghostId, caseRef, scrubText, fuzzGeo, fuzzTimestamp,
   stripImageMetadata, sha256, buildMunicipalPayload, assertNoLeak, assertGeoBlurred,
@@ -451,6 +451,60 @@ function escapeClues() {
   ];
 }
 
+// ── OpenStreetMap tile proxy ───────────────────────────────────────────────
+// The browser never talks to OSM directly: if it did, the tile server would
+// log the reporter's IP next to the exact streets they zoomed into. Tiles are
+// fetched server-side, cached on disk (so areas seen once work offline), and
+// limited to the Soweto area so this can't be used as an open proxy.
+const TILE_DIR = join(DATA_DIR, 'tiles');
+const TILE_BBOX = { n: -26.15, s: -26.34, w: 27.72, e: 28.03 };
+const TILE_ZOOM = [11, 18];
+const TILE_UA = 'MsotraGameplayLab/1.0 (community civic-reporting demo; tile cache)';
+const inflight = new Map();
+
+const lng2x = (lng, z) => Math.floor(((lng + 180) / 360) * 2 ** z);
+const lat2y = (lat, z) => {
+  const r = (lat * Math.PI) / 180;
+  return Math.floor(((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * 2 ** z);
+};
+
+async function serveTile(pathname, res) {
+  const m = pathname.match(/^\/tiles\/(\d{1,2})\/(\d{1,6})\/(\d{1,6})\.png$/);
+  if (!m) return json(res, 404, { error: 'not found' });
+  const [z, x, y] = m.slice(1).map(Number);
+  if (z < TILE_ZOOM[0] || z > TILE_ZOOM[1]
+    || x < lng2x(TILE_BBOX.w, z) || x > lng2x(TILE_BBOX.e, z)
+    || y < lat2y(TILE_BBOX.n, z) || y > lat2y(TILE_BBOX.s, z)) {
+    return json(res, 404, { error: 'outside Soweto tile area' });
+  }
+
+  const file = join(TILE_DIR, String(z), String(x), `${y}.png`);
+  let buf = await readFile(file).catch(() => null);
+  if (!buf) {
+    const key = `${z}/${x}/${y}`;
+    if (!inflight.has(key)) {
+      inflight.set(key, (async () => {
+        const r = await fetch(`https://tile.openstreetmap.org/${key}.png`, {
+          headers: { 'user-agent': TILE_UA }, signal: AbortSignal.timeout(8000),
+        });
+        if (!r.ok) throw new Error(`tile upstream ${r.status}`);
+        const data = Buffer.from(await r.arrayBuffer());
+        await mkdir(dirname(file), { recursive: true });
+        await writeFile(file, data);
+        return data;
+      })().finally(() => inflight.delete(key)));
+    }
+    buf = await inflight.get(key).catch(() => null);
+    // Offline and never cached: 503 tells the client to fall back to the grid map.
+    if (!buf) return json(res, 503, { error: 'tile unavailable offline' });
+  }
+  res.writeHead(200, {
+    'content-type': 'image/png', 'content-length': buf.length,
+    'cache-control': 'public, max-age=604800',
+  });
+  res.end(buf);
+}
+
 // ── request handler ────────────────────────────────────────────────────────
 
 const server = createServer(async (req, res) => {
@@ -474,6 +528,10 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname.startsWith('/api/case/')) {
       const dossier = reportDossier(decodeURIComponent(url.pathname.slice('/api/case/'.length)));
       return dossier ? json(res, 200, dossier) : json(res, 404, { error: 'unknown case ref' });
+    }
+
+    if (req.method === 'GET' && url.pathname.startsWith('/tiles/')) {
+      return await serveTile(url.pathname, res);
     }
 
     if (req.method === 'GET' && url.pathname.startsWith('/media/')) {

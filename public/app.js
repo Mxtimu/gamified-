@@ -61,6 +61,7 @@ function show(view) {
   $$('nav.tabs button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.view === view)));
   $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${view}`));
   window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (view === 'map') requestAnimationFrame(fitStreetMap);
   if (view === 'wallet') loadWallet();
   if (view === 'hood') loadBoards();
   if (view === 'ghost') { renderStages(); loadAudit(); runScrub(); }
@@ -160,7 +161,80 @@ $('#enlistBtn').addEventListener('click', async () => {
 });
 
 // ── map ───────────────────────────────────────────────────────────────────
+// Two looks: an OpenStreetMap street map (default, tiles proxied + cached by
+// our own server so OSM never sees the reporter) and the stylised SVG grid,
+// which needs no network and is the automatic fallback when offline.
+const MAP_MODE_KEY = 'msotra.mapMode';
+const SOWETO_BOUNDS = [[LAT_BOT, LNG_L], [LAT_TOP, LNG_R]];
+let mapMode = (() => { try { return localStorage.getItem(MAP_MODE_KEY); } catch { return null; } })() || 'street';
+let osm = null; // { map, zones, pin, needsFit }
+
 function renderMap() {
+  $$('#mapToggle button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === mapMode)));
+  if (mapMode === 'street' && window.L) return renderStreetMap();
+  if (osm) { osm.map.remove(); osm = null; }
+  renderGridMap();
+}
+
+$('#mapToggle').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-mode]');
+  if (!b || b.dataset.mode === mapMode) return;
+  if (b.dataset.mode === 'street' && !window.L) return toast('Street map failed to load — using the grid.');
+  mapMode = b.dataset.mode;
+  try { localStorage.setItem(MAP_MODE_KEY, mapMode); } catch { /* private mode */ }
+  SFX.play('tick');
+  renderMap();
+});
+
+function fallbackToGrid() {
+  if (mapMode !== 'street') return;
+  mapMode = 'grid'; // not persisted: next visit tries the street map again
+  toast('No connection for street tiles — switched to the offline Soweto grid.', 3500);
+  renderMap();
+}
+
+function renderStreetMap() {
+  if (!osm || !document.getElementById('osm')) {
+    $('#mapWrap').innerHTML = `
+      <div id="osm" class="osm" aria-label="Soweto street map — tap to drop your pin"></div>
+      <div class="map-readout" id="mapReadout">Tap anywhere to drop your intel pin.</div>`;
+    const map = L.map('osm', {
+      minZoom: 11, maxZoom: 18,
+      maxBounds: [[-26.34, 27.72], [-26.15, 28.03]], maxBoundsViscosity: 1,
+    });
+    const tiles = L.tileLayer('/tiles/{z}/{x}/{y}.png', {
+      minZoom: 11, maxZoom: 18,
+      attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
+    }).addTo(map);
+    let loaded = 0, failed = 0;
+    tiles.on('tileload', () => { loaded++; });
+    tiles.on('tileerror', () => { if (++failed >= 4 && !loaded) fallbackToGrid(); });
+    map.on('click', (e) => dropPin(e.latlng.lat, e.latlng.lng));
+    osm = { map, zones: L.layerGroup().addTo(map), pin: L.layerGroup().addTo(map), needsFit: true };
+    fitStreetMap();
+  }
+
+  osm.zones.clearLayers();
+  for (const z of S.zones) {
+    L.circleMarker([z.lat, z.lng], {
+      radius: 8 + Math.min(6, z.reports), weight: 2,
+      color: cssVar('--map-node-line') || '#000', fillColor: healthColour(z.grid_health), fillOpacity: 0.9,
+      className: z.grid_health < 45 ? 'osm-zone hot' : 'osm-zone',
+    }).bindTooltip(`<b>${z.name}</b><br>${z.grid_health}% grid · ${z.reports} drops`, { direction: 'top' })
+      .addTo(osm.zones);
+  }
+  if (S.pin) paintPin(); else osm.pin.clearLayers();
+}
+
+/** Leaflet can't size itself inside a hidden tab, so fit once the map tab is visible. */
+function fitStreetMap() {
+  if (!osm || !osm.needsFit || !$('#osm').offsetWidth) return;
+  osm.map.invalidateSize();
+  osm.map.fitBounds(SOWETO_BOUNDS);
+  osm.needsFit = false;
+}
+
+function renderGridMap() {
   const links = [[0, 1], [1, 2], [0, 5], [5, 7], [7, 8], [8, 10], [8, 9], [9, 11], [3, 4], [4, 6], [6, 1], [3, 8], [4, 0]];
   const zoneById = (i) => S.zones[i];
 
@@ -223,23 +297,39 @@ function dropPin(lat, lng) {
   paintPin();
 }
 
-function paintPin() {
-  const x = px(S.pin.lng), y = py(S.pin.lat);
-  $('#pinLayer').innerHTML = `
-    <g class="pin-drop" transform="translate(${x},${y})">
+const PIN_SVG = `
       <circle r="24" class="pin-halo"/>
       <circle r="6" class="pin-dot"/>
       <path d="M0 -8 v-26" class="pin-stem"/>
-      <circle cy="-34" r="6" class="pin-head"/>
-    </g>`;
+      <circle cy="-34" r="6" class="pin-head"/>`;
+
+function paintPin() {
+  const snap = 0.00135;
+  if (osm) {
+    // Show the 150 m cell authorities receive, so the blur is visible on real streets.
+    const cLat = Math.round(S.pin.lat / snap) * snap, cLng = Math.round(S.pin.lng / snap) * snap;
+    osm.pin.clearLayers();
+    L.rectangle([[cLat - snap / 2, cLng - snap / 2], [cLat + snap / 2, cLng + snap / 2]], {
+      className: 'osm-blur', weight: 2, dashArray: '6 5', fillOpacity: 0.12, interactive: false,
+    }).addTo(osm.pin);
+    L.marker([S.pin.lat, S.pin.lng], {
+      interactive: false, keyboard: false,
+      icon: L.divIcon({
+        className: 'osm-pin', iconSize: [60, 80], iconAnchor: [30, 50],
+        html: `<svg width="60" height="80" viewBox="-30 -50 60 80"><g class="pin-drop">${PIN_SVG}</g></svg>`,
+      }),
+    }).addTo(osm.pin);
+  } else {
+    $('#pinLayer').innerHTML = `
+    <g class="pin-drop" transform="translate(${px(S.pin.lng)},${py(S.pin.lat)})">${PIN_SVG}</g>`;
+  }
   // Nearest zone, computed client-side for instant feedback.
   let best = null, bestD = Infinity;
   for (const z of S.zones) {
     const d = Math.hypot((z.lat - S.pin.lat) * 111320, (z.lng - S.pin.lng) * 100000);
     if (d < bestD) { bestD = d; best = z; }
   }
-  const snap = 0.00135;
-  const fz = (v) => (Math.round(v / snap) * snap).toFixed(5);
+  const fz =(v) => (Math.round(v / snap) * snap).toFixed(5);
   $('#mapReadout').innerHTML = `
     Pin: <b>${S.pin.lat.toFixed(5)}, ${S.pin.lng.toFixed(5)}</b> ·
     zone <b>${best.name}</b> (${Math.round(bestD)} m from ${best.landmark})<br>

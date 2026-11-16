@@ -292,6 +292,21 @@ label.fld span{display:block;font-size:10.5px;letter-spacing:.14em;text-transfor
   border-radius:10px;padding:9px 12px;font-size:11.5px;backdrop-filter:blur(6px);max-width:85%
 }
 .map-readout b{color:var(--amber-text)}
+/* street map (Leaflet + OSM tiles via /tiles proxy) */
+.map-toggle{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
+.map-toggle button{background:var(--panel2);border:1px solid var(--line);color:var(--dim);
+  border-radius:9px;padding:8px 12px;font:inherit;font-size:12px;font-weight:800;cursor:pointer}
+.map-toggle button[aria-pressed="true"]{background:var(--grad-mag);color:var(--on-mag);border-color:transparent}
+.osm{position:relative;z-index:0;height:min(62vh,560px);min-height:320px;background:var(--map-bg);cursor:crosshair}
+.osm.leaflet-container{font:inherit;cursor:crosshair}
+.osm + .map-readout{bottom:28px}
+/* Night ops: invert the light OSM style instead of fetching a second tile set. */
+:root:not([data-theme="light"]) .osm .leaflet-tile-pane{filter:invert(1) hue-rotate(180deg) brightness(.82) contrast(.92)}
+.osm-pin{background:none;border:0}
+.osm-pin svg{overflow:visible;display:block}
+.osm-blur{stroke:var(--teal);fill:var(--teal)}
+.osm-zone.hot{animation:osmhot 1.8s ease-in-out infinite}
+@keyframes osmhot{50%{stroke-width:8;stroke-opacity:.4}}
 .legend{display:flex;gap:12px;flex-wrap:wrap;margin-top:10px;font-size:11px;color:var(--dim)}
 .legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}
 .legend i.ok{background:var(--ok)}

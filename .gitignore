@@ -4,4 +4,5 @@ data/msotra.db-wal
 data/msotra.db-shm
 data/media/*
 !data/media/.gitkeep
+data/tiles/
 *.log

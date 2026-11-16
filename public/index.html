@@ -13,6 +13,7 @@
 </script>
 <title>Msotra Gameplay Lab — Grid Guardians</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -100,6 +101,10 @@
       <p class="sub">Tap the exact spot on the Soweto grid. Your pin stays precise for us —
         authorities only ever receive a <b>150 m blurred</b> coordinate so nobody can work out
         where you were standing.</p>
+    </div>
+    <div class="map-toggle" id="mapToggle" role="group" aria-label="Map style">
+      <button type="button" data-mode="street" aria-pressed="true">🗺️ Street map</button>
+      <button type="button" data-mode="grid" aria-pressed="false">⚡ Grid map (offline)</button>
     </div>
     <div class="map-wrap" id="mapWrap"></div>
     <div class="legend">
@@ -290,6 +295,7 @@
   Not an emergency service. Life in danger? Call <b>10111</b>. Power out? <b>011 375 5555</b>.
 </footer>
 
+<script src="/vendor/leaflet/leaflet.js"></script>
 <script src="/sfx.js"></script>
 <script src="/app.js"></script>
 </body>
