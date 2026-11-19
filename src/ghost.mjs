@@ -29,6 +29,18 @@ export function ghostId(seed) {
   return 'GHOST-' + mac.slice(0, 6).toUpperCase();
 }
 
+/**
+ * Thread-scoped alias for Agent Net comments. Stable for one agent inside one
+ * report's thread, unrelated across threads, so nobody can stitch together one
+ * agent's history across reports (or areas) from what they say.
+ */
+const ALIAS_ANIMALS = ['Fox', 'Owl', 'Wolf', 'Lynx', 'Hawk', 'Mamba', 'Jackal', 'Kudu',
+  'Hyena', 'Eagle', 'Badger', 'Gecko', 'Rhino', 'Impala', 'Crow', 'Puppy'];
+export function threadAlias(reportId, agentId) {
+  const mac = createHmac('sha256', GHOST_SECRET).update(`thread:${reportId}:${agentId}`).digest();
+  return `${ALIAS_ANIMALS[mac[0] % ALIAS_ANIMALS.length]}-${mac.subarray(1, 3).toString('hex').toUpperCase()}`;
+}
+
 export function caseRef() {
   return 'GG-' + randomBytes(3).toString('hex').toUpperCase();
 }
@@ -200,17 +212,18 @@ export function sha256(buf) {
  */
 export const MUNICIPAL_ALLOWLIST = Object.freeze([
   'case_ref', 'category', 'severity', 'description',
-  'zone', 'crew_area', 'landmark', 'lat', 'lng', 'location_precision_m',
+  'zone', 'section', 'crew_area', 'landmark', 'lat', 'lng', 'location_precision_m',
   'observed_window', 'evidence_count', 'evidence_hash', 'source',
 ]);
 
-export function buildMunicipalPayload(report, zone, mediaHashes = []) {
+export function buildMunicipalPayload(report, zone, mediaHashes = [], section = null) {
   const safe = {
     case_ref: report.ref,
     category: report.category,
     severity: report.severity,
     description: report.narrative_safe,
     zone: zone.name,
+    section: section ? section.name : null, // extension / zone inside the township
     crew_area: zone.crew,
     landmark: zone.landmark,
     lat: report.lat_fuzzed,
@@ -235,7 +248,7 @@ export function buildMunicipalPayload(report, zone, mediaHashes = []) {
  */
 const MACHINE_FIELDS = new Set([
   'case_ref', 'evidence_hash', 'observed_window', 'source',
-  'zone', 'crew_area', 'landmark', 'category',
+  'zone', 'section', 'crew_area', 'landmark', 'category',
 ]);
 
 /**

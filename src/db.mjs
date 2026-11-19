@@ -4,13 +4,15 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { TOWNSHIPS } from './townships.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const DATA_DIR = join(ROOT, 'data');
 export const MEDIA_DIR = join(DATA_DIR, 'media');
 mkdirSync(MEDIA_DIR, { recursive: true });
 
-export const db = new DatabaseSync(join(DATA_DIR, 'msotra.db'));
+// DB_FILE lets tests and demos run against a throwaway database.
+export const db = new DatabaseSync(process.env.DB_FILE || join(DATA_DIR, 'msotra.db'));
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 
@@ -27,7 +29,8 @@ CREATE TABLE IF NOT EXISTS zones (
 );
 CREATE INDEX IF NOT EXISTS idx_zones_geo ON zones(lat, lng);
 
--- Agents: pseudonymous only. No names, no phone numbers, ever.
+-- Agents: pseudonymous only. No names, and no readable phone numbers, ever
+-- (see the profile migration below: only a keyed hash of the phone is kept).
 CREATE TABLE IF NOT EXISTS agents (
   id            INTEGER PRIMARY KEY,
   callsign      TEXT NOT NULL UNIQUE,
@@ -145,29 +148,99 @@ CREATE TABLE IF NOT EXISTS escape_sessions (
 );
 `);
 
-const ZONES = [
-  ['Orlando West',   'Orlando Crew',     -26.2385, 27.9056, 'Vilakazi Street'],
-  ['Orlando East',   'Orlando Crew',     -26.2489, 27.9270, 'Orlando Stadium'],
-  ['Diepkloof',      'Diepkloof Crew',   -26.2500, 27.9500, 'Diepkloof Hostel'],
-  ['Jabulani',       'Central Crew',     -26.2564, 27.8640, 'Jabulani Mall'],
-  ['Klipspruit',     'Central Crew',     -26.2647, 27.8878, 'Maponya Mall'],
-  ['Meadowlands',    'Meadowlands Crew', -26.2170, 27.8780, 'Meadowlands Zone 9'],
-  ['Pimville',       'Pimville Crew',    -26.2760, 27.8990, 'Pimville Zone 6'],
-  ['Dobsonville',    'Dobsonville Crew', -26.2280, 27.8390, 'Dobsonville Centre'],
-  ['Zola',           'Deep West Crew',   -26.2480, 27.8420, 'Zola Taxi Rank'],
-  ['Naledi',         'Deep West Crew',   -26.2610, 27.8330, 'Naledi Hall'],
-  ['Emdeni',         'Deep West Crew',   -26.2400, 27.8290, 'Emdeni Square'],
-  ['Protea Glen',    'Protea Crew',      -26.2790, 27.8090, 'Protea Glen Ext 12'],
-];
-
-if (db.prepare('SELECT COUNT(*) AS n FROM zones').get().n === 0) {
-  const ins = db.prepare(
-    'INSERT INTO zones (name, crew, lat, lng, landmark, grid_health) VALUES (?, ?, ?, ?, ?, ?)'
-  );
-  for (const [name, crew, lat, lng, landmark] of ZONES) {
-    ins.run(name, crew, lat, lng, landmark, 70 + Math.floor(Math.random() * 30));
+// ── Townships and their parts (see src/townships.mjs) ─────────────────────
+// zones = townships. sections = the extensions / zones / phases inside one.
+// Upserted by name on every start, so editing townships.mjs and restarting is
+// enough. Existing ids and grid health are kept: agents and reports point at them.
+db.exec(`
+CREATE TABLE IF NOT EXISTS sections (
+  id      INTEGER PRIMARY KEY,
+  zone_id INTEGER NOT NULL REFERENCES zones(id) ON DELETE CASCADE,
+  name    TEXT NOT NULL,
+  sort    INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (zone_id, name)
+);
+`);
+{
+  const insZone = db.prepare(`INSERT INTO zones (name, crew, lat, lng, landmark, grid_health)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(name) DO UPDATE SET crew = excluded.crew, lat = excluded.lat,
+      lng = excluded.lng, landmark = excluded.landmark
+    RETURNING id`);
+  const insSection = db.prepare(`INSERT INTO sections (zone_id, name, sort) VALUES (?, ?, ?)
+    ON CONFLICT(zone_id, name) DO UPDATE SET sort = excluded.sort`);
+  db.exec('BEGIN');
+  for (const t of TOWNSHIPS) {
+    const { id } = insZone.get(t.name, t.crew, t.lat, t.lng, t.landmark, 70 + Math.floor(Math.random() * 30));
+    t.sections.forEach((name, i) => insSection.run(id, name, i));
   }
+  db.exec('COMMIT');
 }
+
+// ── Profiles (added later — migrate existing databases in place) ───────────
+// One profile per person is enforced two ways, both without storing anything
+// readable: phone_hash is a keyed HMAC of the normalised cellphone number (the
+// number itself is never written anywhere), device_hash is a hash of a random
+// per-browser token. Partial unique indexes let older pre-profile rows keep NULLs.
+const agentCols = new Set(db.prepare('PRAGMA table_info(agents)').all().map((c) => c.name));
+for (const [col, type] of [
+  ['phone_hash', 'TEXT'], ['device_hash', 'TEXT'], ['pin_hash', 'TEXT'], ['avatar', "TEXT NOT NULL DEFAULT '🐶'"],
+]) {
+  if (!agentCols.has(col)) db.exec(`ALTER TABLE agents ADD COLUMN ${col} ${type}`);
+}
+
+// Reports remember which part of the township (extension / zone) was chosen.
+if (!db.prepare('PRAGMA table_info(reports)').all().some((c) => c.name === 'section_id')) {
+  db.exec('ALTER TABLE reports ADD COLUMN section_id INTEGER REFERENCES sections(id)');
+}
+db.exec(`
+CREATE UNIQUE INDEX IF NOT EXISTS ux_agents_phone  ON agents(phone_hash)  WHERE phone_hash  IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_agents_device ON agents(device_hash) WHERE device_hash IS NOT NULL;
+
+-- Login sessions: only a hash of the cookie token is stored.
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  agent_id   INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id);
+
+-- Agent Net: agents talking about each other's reports. Only the scrubbed text
+-- is ever stored; authors are shown by a per-thread alias, never a handle.
+CREATE TABLE IF NOT EXISTS report_comments (
+  id         INTEGER PRIMARY KEY,
+  report_id  INTEGER NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+  agent_id   INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  alias      TEXT NOT NULL,
+  body       TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_comments_report ON report_comments(report_id, id);
+
+CREATE TABLE IF NOT EXISTS report_reactions (
+  report_id  INTEGER NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+  agent_id   INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  kind       TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (report_id, agent_id, kind)
+);
+
+-- Supabase sync queue. Anything that should reach the cloud is written here
+-- first, so the app keeps working offline and catches up when it can.
+CREATE TABLE IF NOT EXISTS cloud_outbox (
+  id          INTEGER PRIMARY KEY,
+  kind        TEXT NOT NULL,          -- 'row' | 'photo'
+  target      TEXT NOT NULL,          -- table name, or storage object path
+  payload     TEXT NOT NULL,          -- JSON row, or local media file name
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  last_error  TEXT,
+  next_try_at TEXT NOT NULL DEFAULT (datetime('now')),
+  done_at     TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_pending ON cloud_outbox(done_at, next_try_at);
+`);
 
 /** Great-circle distance in metres. */
 export function haversine(lat1, lng1, lat2, lng2) {
@@ -190,6 +263,25 @@ export function nearestZone(lat, lng) {
     if (d < bestD) { bestD = d; best = z; }
   }
   return { zone: best, distance_m: Math.round(bestD) };
+}
+
+/** How far a pin may sit from a chosen township's centre and still count as in it. */
+export const TOWNSHIP_PIN_RADIUS_M = 4000;
+
+/**
+ * Which township and part a report belongs to. The reporter's choice wins when
+ * the pin is plausibly inside that township; otherwise the nearest township to
+ * the pin is used (and the part is dropped, since it belonged to another one).
+ */
+export function resolveArea(lat, lng, zoneId, sectionId) {
+  const nearest = nearestZone(lat, lng);
+  const chosen = Number.isInteger(zoneId) ? db.prepare('SELECT * FROM zones WHERE id = ?').get(zoneId) : null;
+  const useChosen = chosen && haversine(lat, lng, chosen.lat, chosen.lng) <= TOWNSHIP_PIN_RADIUS_M;
+  const zone = useChosen ? chosen : nearest.zone;
+  const section = useChosen && Number.isInteger(sectionId)
+    ? db.prepare('SELECT * FROM sections WHERE id = ? AND zone_id = ?').get(sectionId, zone.id) || null
+    : null;
+  return { zone, section, distance_m: Math.round(haversine(lat, lng, zone.lat, zone.lng)) };
 }
 
 export function logSanitization(reportId, stage, rule, field, hits = 1) {

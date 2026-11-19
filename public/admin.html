@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en-ZA">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<script>
+  try { var t = localStorage.getItem('msotra.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+<title>Grid Guardians Admin</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%9B%A1%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/portal.css">
+</head>
+<body>
+
+<header class="portal-head">
+  <h1>⚡ Grid Guardians <small>Admin</small></h1>
+  <span class="muted" id="updated" style="font-size:12px"></span>
+  <span class="spacer"></span>
+  <button class="pbtn" id="refreshBtn" type="button">↻ Refresh</button>
+  <button class="pbtn" id="themeBtn" type="button"></button>
+  <button class="pbtn" id="logoutBtn" type="button">Log out</button>
+</header>
+
+<nav class="ptabs" role="tablist" aria-label="Admin sections">
+  <button role="tab" data-tab="overview" aria-selected="true">📊 Overview</button>
+  <button role="tab" data-tab="reports" aria-selected="false">📋 Reports</button>
+  <button role="tab" data-tab="delivery" aria-selected="false">🏛️ City Power / SAPS</button>
+  <button role="tab" data-tab="agents" aria-selected="false">👥 Agents</button>
+  <button role="tab" data-tab="wallet" aria-selected="false">🪙 Wallet</button>
+  <button role="tab" data-tab="moderation" aria-selected="false">🛡️ Moderation</button>
+  <button role="tab" data-tab="system" aria-selected="false">🖥️ System</button>
+  <button role="tab" data-tab="links" aria-selected="false">🔗 Portals</button>
+</nav>
+
+<main>
+  <!-- OVERVIEW -->
+  <section class="pview active" id="tab-overview">
+    <div class="kpis" id="kpis"></div>
+    <div class="panel">
+      <h2>Reports per day <span class="tag">LAST 30 DAYS</span></h2>
+      <div class="chart" id="dailyChart"></div>
+    </div>
+    <div class="cols">
+      <div class="panel"><h2>By status</h2><div id="statusBars"></div></div>
+      <div class="panel"><h2>By category</h2><div id="catBars"></div></div>
+    </div>
+    <div class="cols" style="margin-top:12px">
+      <div class="panel">
+        <h2>Busiest townships <span class="tag">TOP 10</span></h2>
+        <div class="tablewrap"><table class="board"><thead><tr>
+          <th>Township</th><th class="num">Reports</th><th class="num">Verified</th><th class="num">Grid</th>
+        </tr></thead><tbody id="townBody"></tbody></table></div>
+      </div>
+      <div class="panel"><h2>Recent activity</h2><ul class="activity" id="activity"></ul></div>
+    </div>
+  </section>
+
+  <!-- REPORTS -->
+  <section class="pview" id="tab-reports">
+    <div class="filters">
+      <select id="fStatus" aria-label="Status">
+        <option value="">All statuses</option><option value="submitted">Submitted</option>
+        <option value="forwarded">Forwarded</option><option value="verified">Verified</option>
+        <option value="rejected">Rejected</option>
+      </select>
+      <select id="fTown" aria-label="Township"><option value="">All townships</option></select>
+      <select id="fCat" aria-label="Category"><option value="">All categories</option></select>
+      <input id="fRef" type="search" placeholder="Case ref, e.g. GG-12" aria-label="Case reference">
+    </div>
+    <div class="rcards" id="reportList"></div>
+    <button class="pbtn" id="reportMore" type="button" hidden style="margin-top:10px">Load older</button>
+  </section>
+
+  <!-- DELIVERY -->
+  <section class="pview" id="tab-delivery">
+    <div id="deliveryNotice"></div>
+    <div class="kpis" id="deliveryKpis"></div>
+    <div class="cols">
+      <div class="panel">
+        <h2>Sent to each authority</h2>
+        <div class="tablewrap"><table class="board"><thead><tr>
+          <th>Authority</th><th class="num">Sent</th><th class="num">Failed</th>
+        </tr></thead><tbody id="endpointBody"></tbody></table></div>
+      </div>
+      <div class="panel">
+        <h2>Decisions by</h2>
+        <div class="tablewrap"><table class="board"><thead><tr>
+          <th>Who decided</th><th>Outcome</th><th class="num">Cases</th>
+        </tr></thead><tbody id="authorityBody"></tbody></table></div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <h2>Waiting for a decision <span class="tag">OLDEST FIRST</span></h2>
+      <p class="sub">Cases older than 24 hours are outlined in amber.</p>
+      <div class="rcards" id="waitingList" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+  <!-- AGENTS -->
+  <section class="pview" id="tab-agents">
+    <div class="notice ok">Agents and reports are kept as separate lists on purpose: this portal never shows
+      which agent filed which report.</div>
+    <div class="panel">
+      <div class="tablewrap"><table class="board"><thead><tr>
+        <th></th><th>Ghost handle</th><th>Callsign</th><th>Home township</th><th>Rank</th>
+        <th class="num">XP</th><th class="num">Coins</th><th class="num">Reports</th><th class="num">Verified</th>
+        <th>Last report</th><th>Joined</th>
+      </tr></thead><tbody id="agentBody"></tbody></table></div>
+    </div>
+  </section>
+
+  <!-- WALLET -->
+  <section class="pview" id="tab-wallet">
+    <div class="kpis" id="walletKpis"></div>
+    <div class="cols">
+      <div class="panel"><h2>Redeemed items</h2><div id="itemBars"></div></div>
+      <div class="panel">
+        <h2>Recent redemptions</h2>
+        <div class="tablewrap"><table class="board"><thead><tr>
+          <th>When</th><th>Item</th><th class="num">Coins</th><th>Agent</th><th>Voucher</th>
+        </tr></thead><tbody id="redeemBody"></tbody></table></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- MODERATION -->
+  <section class="pview" id="tab-moderation">
+    <div class="panel">
+      <h2>Agent Net comments <span class="tag">NEWEST 100</span></h2>
+      <p class="sub">Comments are already scrubbed for numbers, addresses and names. Delete anything abusive,
+        threatening, or that names someone.</p>
+      <ul class="activity" id="commentList"></ul>
+    </div>
+  </section>
+
+  <!-- SYSTEM -->
+  <section class="pview" id="tab-system">
+    <div class="panel" id="warnPanel"><h2>Needs attention</h2><ul class="warnlist" id="warnings"></ul></div>
+    <div class="kpis" id="sysKpis"></div>
+    <div class="cols">
+      <div class="panel"><h2>Supabase cloud backup</h2><div id="cloudBox"></div></div>
+      <div class="panel"><h2>Street map tiles (OpenStreetMap)</h2><div id="tileBox"></div></div>
+    </div>
+  </section>
+
+  <!-- LINKS -->
+  <section class="pview" id="tab-links">
+    <div class="cols">
+      <div class="panel">
+        <h2>Partner portal <span class="tag">CITY POWER / SAPS</span></h2>
+        <p class="sub">Give this link and the partner password to your contact at City Power or SAPS. They see
+          only blurred, anonymous reports and can mark each one verified or rejected. Verifying pays the
+          reporter's coins.</p>
+        <p style="margin-top:10px"><a class="mono" id="partnerLink" href="/partner.html" target="_blank" rel="noopener"></a></p>
+        <p class="sub" id="partnerState"></p>
+      </div>
+      <div class="panel">
+        <h2>Public impact page <span class="tag">NO LOGIN</span></h2>
+        <p class="sub">Share with the community, councillors and sponsors. Totals only; townships with fewer than 3
+          reports are left out so nobody can be singled out.</p>
+        <p style="margin-top:10px"><a class="mono" id="impactLink" href="/impact.html" target="_blank" rel="noopener"></a></p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="/admin.js"></script>
+</body>
+</html>

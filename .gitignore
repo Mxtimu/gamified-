@@ -6,3 +6,4 @@ data/media/*
 !data/media/.gitkeep
 data/tiles/
 *.log
+.env

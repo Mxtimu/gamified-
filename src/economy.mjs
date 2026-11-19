@@ -22,7 +22,10 @@ export function rankFor(xp) {
   };
 }
 
-/** Payout table. Higher-risk grid assets pay more; photo evidence pays a bonus. */
+/** Every verified report pays exactly this many coins, whatever its type. */
+export const VERIFIED_REPORT_COINS = 10;
+
+/** XP still scales with risk: higher-risk grid assets and photo evidence rank you up faster. */
 const CATEGORY_VALUE = {
   cable_theft:          40,
   substation_vandalism: 35,
@@ -33,8 +36,8 @@ const CATEGORY_VALUE = {
 
 export function quoteReward(category, severity, mediaCount) {
   const base = CATEGORY_VALUE[category] ?? 10;
-  const coins = Math.round(base * (1 + (severity - 1) * 0.35)) + (mediaCount > 0 ? 25 : 0);
-  return { coins, xp: Math.round(coins * 0.8) };
+  const weight = Math.round(base * (1 + (severity - 1) * 0.35)) + (mediaCount > 0 ? 25 : 0);
+  return { coins: VERIFIED_REPORT_COINS, xp: Math.round(weight * 0.8) };
 }
 
 /**
@@ -137,7 +140,7 @@ export function zoneLeaderboard() {
 
 export function agentLeaderboard(limit = 10) {
   return db.prepare(`
-    SELECT a.ghost_id, a.callsign, a.rank, a.xp, a.coin_balance,
+    SELECT a.ghost_id, a.avatar, a.rank, a.xp, a.coin_balance,
            z.name AS home_zone,
            COUNT(r.id)                                           AS reports,
            SUM(CASE WHEN r.status = 'verified' THEN 1 ELSE 0 END) AS verified

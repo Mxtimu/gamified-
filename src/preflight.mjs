@@ -18,3 +18,12 @@ if (major < 22 || (major === 22 && minor < 5)) {
 `);
   process.exit(1);
 }
+
+// Optional settings (Supabase keys, PHONE_SECRET, …) from a .env file next to
+// server.mjs. Real environment variables win. Missing file = all defaults.
+import { fileURLToPath } from 'node:url';
+try {
+  process.loadEnvFile(fileURLToPath(new URL('../.env', import.meta.url)));
+} catch (e) {
+  if (e.code !== 'ENOENT') console.warn(`  ⚠ Could not read .env: ${e.message}`);
+}

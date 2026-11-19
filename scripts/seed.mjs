@@ -2,13 +2,17 @@
 // Leaderboard has rivals in it. Run with the server up: `npm run seed`.
 const B = process.env.BASE || 'http://localhost:7788';
 
-const post = async (p, body) => {
+// Each seeded agent is a real profile with its own session cookie. No cookie
+// jar is shared between them, so each counts as a separate device.
+const post = async (p, body, cookie = '') => {
   const r = await fetch(B + p, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
+    method: 'POST', headers: { 'content-type': 'application/json', cookie },
     body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error(`${p} -> ${r.status} ${await r.text()}`);
-  return r.json();
+  const data = await r.json();
+  data.cookie = r.headers.getSetCookie().map((c) => c.split(';')[0]).join('; ');
+  return data;
 };
 
 const AGENTS = [
@@ -39,15 +43,20 @@ const DROPS = [
 ];
 
 console.log('seeding agents…');
-for (const [callsign, zone] of AGENTS) {
-  await post('/api/agent', { callsign, home_zone_id: zone });
+// Demo-only numbers in an unallocated-looking block; PIN 0000 for every rival.
+const sessions = [];
+for (const [n, [callsign, zone]] of AGENTS.entries()) {
+  const phone = `06000000${String(n + 1).padStart(2, '0')}`;
+  const res = await post('/api/register', { callsign, phone, pin: '0000', home_zone_id: zone })
+    .catch(() => post('/api/login', { callsign, pin: '0000' })); // already seeded: log in instead
+  sessions.push(res.cookie);
 }
 
 console.log('seeding drops…');
 let i = 0;
 for (const [lat, lng, category, severity, narrative, verified] of DROPS) {
-  const [callsign] = AGENTS[i % AGENTS.length];
-  const res = await post('/api/reports', { callsign, category, severity, narrative, lat, lng });
+  const cookie = sessions[i % AGENTS.length];
+  const res = await post('/api/reports', { category, severity, narrative, lat, lng }, cookie);
   if (verified) {
     await post('/api/verify', { ref: res.report.ref, authority: 'City Power Control' });
   }

@@ -1,4 +1,4 @@
-/* ── Msotra Gameplay Lab — theme tokens ───────────────────────────────────
+/* ── Ghost Puppy Game Studio — theme tokens ───────────────────────────────────
    Dark is the default identity: this is a night-ops game. Light ("Daylight
    Mode") is opt-in via the header toggle and persists — it exists because
    agents actually report outdoors in hard Soweto sun, where a dark UI is
@@ -193,6 +193,32 @@ header.hud{
   border:1px solid var(--line);border-radius:999px;padding:7px 13px;font-size:12.5px;font-weight:700
 }
 .chip b{font-size:14px}
+button.chip{font:inherit;font-size:12.5px;font-weight:700;cursor:pointer}
+button.chip:hover{border-color:var(--line-hover)}
+.chip.drops{color:var(--ink)}
+.chip.drops b{color:var(--amber-text)}
+
+/* ── profile ─────────────────────────────────────────────────────────────── */
+.auth-switch{display:flex;gap:6px;margin:4px 0 14px}
+.auth-switch button{background:var(--panel2);border:1px solid var(--line);color:var(--dim);
+  border-radius:9px;padding:8px 14px;font:inherit;font-size:12px;font-weight:800;cursor:pointer}
+.auth-switch button[aria-pressed="true"]{background:var(--grad-teal);color:var(--on-teal);border-color:transparent}
+.avatar-pick{border:0;padding:0;margin:4px 0 12px;display:flex;flex-wrap:wrap;gap:6px}
+.avatar-pick legend{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
+  font-weight:800;margin-bottom:6px;padding:0}
+.avatar-pick .av{cursor:pointer}
+.avatar-pick .av input{position:absolute;opacity:0;width:1px;height:1px}
+.avatar-pick .av span{display:grid;place-items:center;width:44px;height:44px;font-size:24px;
+  border-radius:12px;background:var(--panel2);border:1px solid var(--line);transition:.15s}
+.avatar-pick .av input:checked + span{border-color:var(--teal);box-shadow:0 0 0 2px var(--teal)}
+.avatar-pick .av input:focus-visible + span{outline:2px solid var(--amber);outline-offset:2px}
+.privacy-note{font-size:12px}
+.form-error{color:var(--danger);font-weight:700;margin:10px 0 0}
+.profile-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.profile-avatar{display:grid;place-items:center;width:64px;height:64px;font-size:36px;border-radius:18px;
+  background:var(--panel2);border:1px solid var(--line)}
+.profile-id{flex:1;min-width:160px}
+.profile-id h2{margin:0 0 2px}
 .chip.coins{border-color:var(--coin-line);background:var(--coin-bg);color:var(--amber-text)}
 .chip.ghost{border-color:var(--safe-line);background:var(--safe-bg);color:var(--teal-text)}
 .chip.rank{border-color:var(--tag-line);background:var(--tag-bg);color:var(--tag-ink)}
@@ -292,6 +318,23 @@ label.fld span{display:block;font-size:10.5px;letter-spacing:.14em;text-transfor
   border-radius:10px;padding:9px 12px;font-size:11.5px;backdrop-filter:blur(6px);max-width:85%
 }
 .map-readout b{color:var(--amber-text)}
+/* Drop Pin: township → extension/zone picker */
+.area-picker{margin-bottom:10px}
+.area-step{margin:0 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--dim)}
+.area-step b{color:var(--ink);text-transform:none;letter-spacing:0}
+#sectionBlock{margin-top:14px;padding-top:12px;border-top:1px solid var(--line2)}
+#townshipSearch{width:100%;box-sizing:border-box;background:var(--panel2);border:1px solid var(--line);
+  color:var(--ink);border-radius:10px;padding:10px 12px;font:inherit;font-size:14px;margin-bottom:9px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;max-height:176px;overflow-y:auto;padding:2px}
+.chips button{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:999px;
+  padding:7px 12px;font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;min-height:34px}
+.chips button:hover{border-color:var(--teal);color:var(--teal-text)}
+.chips button[aria-selected="true"]{background:var(--grad-mag);color:var(--on-mag);border-color:transparent}
+.chips button.unsure{color:var(--dim);font-style:italic}
+.chips .none{color:var(--dim);font-size:13px;padding:6px 2px}
+.osm-zone.chosen{stroke:var(--mag);stroke-width:4}
+.zone-hit.chosen .zone-node{stroke:var(--mag)}
+.zone-hit.chosen .zone-label{fill:var(--mag-text);font-weight:800}
 /* street map (Leaflet + OSM tiles via /tiles proxy) */
 .map-toggle{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
 .map-toggle button{background:var(--panel2);border:1px solid var(--line);color:var(--dim);
@@ -361,6 +404,68 @@ label.fld span{display:block;font-size:10.5px;letter-spacing:.14em;text-transfor
   width:22px;height:22px;border-radius:50%;cursor:pointer;font-size:13px;line-height:1}
 .shot .scrub{position:absolute;bottom:0;left:0;right:0;background:var(--teal);
   color:var(--on-teal);font-size:8.5px;font-weight:900;text-align:center;padding:2px;letter-spacing:.06em}
+
+/* photo analysis cards (Paparazzi) */
+.shots:has(.shot-card){flex-direction:column}
+.shot-card{display:flex;gap:12px;align-items:flex-start;background:var(--panel);border:1px solid var(--line);
+  border-radius:var(--radius);padding:10px;flex-wrap:wrap}
+.shot-busy{display:grid;place-items:center;font-size:32px;background:var(--panel2);animation:pulse-o 1.2s ease-in-out infinite}
+@keyframes pulse-o{50%{opacity:.45}}
+.analysis{flex:1;min-width:200px;font-size:12.5px}
+.analysis ul{list-style:none;margin:6px 0;padding:0;display:grid;gap:4px}
+.analysis li.hit{color:var(--ink)}
+.analysis li.hit b{color:var(--teal-text)}
+.analysis li.q-bad{color:var(--danger);font-weight:700}
+.analysis li.q-warn{color:var(--amber-text)}
+.analysis li.q-ok{color:var(--ok)}
+.analysis li.dim{color:var(--dim);font-size:11.5px}
+.analysis .q-note{margin:4px 0 8px}
+.verdict{display:inline-block;font-weight:900;font-size:12px;letter-spacing:.04em;padding:4px 10px;border-radius:999px;
+  border:1px solid var(--line)}
+.verdict.ok{color:var(--ok);border-color:var(--ok)}
+.verdict.warn{color:var(--amber-text);border-color:var(--amber)}
+.verdict.bad{color:var(--danger);border-color:var(--danger)}
+
+/* ── Agent Net ───────────────────────────────────────────────────────────── */
+.net-list{display:grid;gap:12px;margin-top:12px}
+.net-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px;min-width:0}
+.net-head{font-size:13px;line-height:1.6}
+.net-head .badge{margin-right:6px}
+.net-mine{font-size:9.5px;font-weight:900;letter-spacing:.1em;color:var(--amber-text);border:1px solid var(--amber);
+  border-radius:999px;padding:1px 7px;margin-left:6px}
+.net-meta{color:var(--dim);font-size:11.5px}
+.net-photos{display:flex;gap:8px;overflow-x:auto;margin:10px 0 4px;padding-bottom:4px}
+.net-photos img{height:150px;width:auto;max-width:260px;object-fit:cover;border-radius:10px;border:1px solid var(--line);display:block}
+.net-desc{margin:8px 0;font-size:13.5px;overflow-wrap:anywhere}
+.net-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.react{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:999px;
+  padding:6px 11px;font:inherit;font-size:13px;cursor:pointer;transition:.15s}
+.react:hover{border-color:var(--line-hover)}
+.react[aria-pressed="true"]{border-color:var(--teal);box-shadow:inset 0 0 0 1px var(--teal);color:var(--teal-text)}
+.react span{font-weight:800;font-size:12px}
+.net-thread{margin-top:10px;border-top:1px solid var(--line2);padding-top:10px}
+.comments{display:grid;gap:8px;max-height:320px;overflow-y:auto;padding-right:4px}
+.comment{background:var(--panel2);border:1px solid var(--line2);border-radius:12px;padding:8px 11px;font-size:13px;
+  max-width:88%}
+.comment.me{justify-self:end;border-color:var(--teal-strong)}
+.comment.reporter b{color:var(--amber-text)}
+.comment .when{color:var(--dim);font-size:10.5px;margin-left:6px}
+.comment p{margin:3px 0 0;overflow-wrap:anywhere}
+.comment-form{margin-top:10px}
+.comment-form .row{display:flex;gap:8px;align-items:flex-end;margin-top:4px}
+.comment-form textarea{flex:1;resize:vertical;min-height:42px}
+#netMore{margin:12px auto 0;display:block}
+.osm-view{stroke:var(--amber);fill:var(--amber)}
+
+/* ── first-visit gate ────────────────────────────────────────────────────── */
+.gate{position:fixed;inset:0;z-index:200;background:var(--bg);overflow-y:auto;
+  padding:max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom))}
+.gate-card{max-width:640px;margin:0 auto}
+.gate-brand{font-size:10.5px;letter-spacing:.16em;font-weight:900;color:var(--teal-text);margin-bottom:10px}
+.gate h1{font-size:clamp(26px,6vw,36px);margin:0 0 6px}
+.gate #authPanel > h2{display:none}
+.gate-safety{text-align:center;margin-top:14px}
+body.gated{overflow:hidden}
 
 /* ── proof uploaded animation ────────────────────────────────────────────── */
 .proof-burst{

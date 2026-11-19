@@ -11,7 +11,7 @@
     if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
   } catch (e) { /* private mode — fall back to the dark default */ }
 </script>
-<title>Msotra Gameplay Lab — Grid Guardians</title>
+<title>Ghost Puppy Game Studio — Grid Guardians</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="/styles.css">
@@ -28,13 +28,16 @@
     <div class="bolt">⚡</div>
     <div>
       <h1>Grid Guardians</h1>
-      <small>SPAZA DEFENSE · MSOTRA GAMEPLAY LAB</small>
+      <small>SPAZA DEFENSE · GHOST PUPPY GAME STUDIO</small>
     </div>
   </div>
   <div class="hud-stats">
-    <div class="chip ghost" id="chipGhost" title="Your anonymous handle. Authorities never see more than this.">
-      👤 <b id="ghostId">—</b>
-    </div>
+    <div class="chip drops" title="All intel drops by every player — updates live"
+      aria-live="polite">📦 <b id="dropCount">0</b> drops · ✅ <b id="verifiedCount">0</b> verified</div>
+    <button class="chip ghost" id="chipGhost" type="button"
+      title="Your profile. Authorities only ever see your ghost handle.">
+      <span id="hudAvatar">👤</span> <b id="ghostId">—</b>
+    </button>
     <div class="chip rank">🎖️ <b id="rankName">Observer</b></div>
     <div class="chip coins">🪙 <b id="coinCount">0</b> <span style="opacity:.7">MC</span></div>
     <button class="mutebtn" id="themeBtn" title="Switch between night ops and daylight mode"
@@ -45,6 +48,8 @@
 
 <nav class="tabs" role="tablist">
   <button role="tab" data-view="hq"    aria-selected="true">🎯 HQ</button>
+  <button role="tab" data-view="net"   aria-selected="false">📡 Agent Net</button>
+  <button role="tab" data-view="profile" aria-selected="false">👤 Profile</button>
   <button role="tab" data-view="map"   aria-selected="false">🗺️ Drop Pin</button>
   <button role="tab" data-view="intel" aria-selected="false">💬 Kasi Intel</button>
   <button role="tab" data-view="proof" aria-selected="false">📸 Paparazzi</button>
@@ -68,17 +73,7 @@
       </p>
     </div>
 
-    <div class="panel">
-      <h2>Agent Setup <span class="tag">NO REAL NAMES</span></h2>
-      <div class="grid2">
-        <label class="fld"><span>Callsign (stays on this device)</span>
-          <input id="callsign" placeholder="e.g. Ma2000, Shoz, GridCat" maxlength="24" autocomplete="off"></label>
-        <label class="fld"><span>Home turf</span>
-          <select id="homeZone"></select></label>
-      </div>
-      <button class="btn teal" id="enlistBtn">Enlist as Msotra Agent</button>
-      <p class="sub" id="enlistNote"></p>
-    </div>
+    <div class="panel" id="hqProfile"></div>
 
     <div class="grid3" id="hqStats"></div>
 
@@ -94,6 +89,66 @@
     </div>
   </section>
 
+  <!-- ══ AGENT NET ═══════════════════════════════════════════════════════ -->
+  <section class="view" id="view-net">
+    <div class="panel">
+      <h2>Agent Net <span class="tag">AGENTS ONLY</span></h2>
+      <p class="sub">Every agent's reports — photo and location — in one place. React and talk them
+        through with other agents. You get a <b>different alias in every thread</b>, so nobody can
+        follow you from report to report. Locations are blurred to 150 m.</p>
+      <p class="sub" style="color:var(--safety-ink)"><b>Never name anyone, never arrange to meet,
+        never go to the scene.</b> Comments are scrubbed for numbers, addresses and names.</p>
+      <button class="btn mag" type="button" data-goto="map">＋ Post a report (photo + location)</button>
+    </div>
+    <div id="netList" class="net-list"><p class="sub">Loading reports…</p></div>
+    <button class="btn ghost" id="netMore" type="button" hidden>Load older reports</button>
+  </section>
+
+  <!-- ══ PROFILE ═════════════════════════════════════════════════════════ -->
+  <section class="view" id="view-profile">
+    <div class="panel" id="authPanel">
+      <h2>Your Agent Profile <span class="tag">ONE PER PERSON</span></h2>
+      <div class="auth-switch" role="group" aria-label="Create a profile or log in">
+        <button type="button" data-auth="register" aria-pressed="true">Create profile</button>
+        <button type="button" data-auth="login" aria-pressed="false">Log in</button>
+      </div>
+
+      <form id="registerForm" class="auth-form" autocomplete="off" novalidate>
+        <div class="grid2">
+          <label class="fld"><span>Callsign — no real names</span>
+            <input name="callsign" placeholder="e.g. Ma2000, GridCat" maxlength="24" required
+              pattern="[A-Za-z0-9_.\-]{3,24}"></label>
+          <label class="fld"><span>Cellphone number</span>
+            <input name="phone" type="tel" inputmode="tel" placeholder="082 123 4567" required></label>
+          <label class="fld"><span>PIN (4–8 digits)</span>
+            <input name="pin" type="password" inputmode="numeric" maxlength="8" autocomplete="new-password" required></label>
+          <label class="fld"><span>Confirm PIN</span>
+            <input name="pin2" type="password" inputmode="numeric" maxlength="8" autocomplete="new-password" required></label>
+          <label class="fld"><span>Home turf</span>
+            <select name="home_zone_id" id="homeZone"></select></label>
+        </div>
+        <fieldset class="avatar-pick" id="registerAvatars"><legend>Avatar</legend></fieldset>
+        <p class="sub privacy-note">🔒 Your number is only used to make sure each person has one
+          profile. It's scrambled one-way the moment it arrives. The number itself is never stored, never shown,
+          and never sent to City Power or SAPS. You can create <b>one profile per phone number and per device</b>.</p>
+        <button class="btn teal" type="submit">Create profile</button>
+      </form>
+
+      <form id="loginForm" class="auth-form" autocomplete="off" novalidate hidden>
+        <div class="grid2">
+          <label class="fld"><span>Callsign</span>
+            <input name="callsign" maxlength="24" required></label>
+          <label class="fld"><span>PIN</span>
+            <input name="pin" type="password" inputmode="numeric" maxlength="8" autocomplete="current-password" required></label>
+        </div>
+        <button class="btn teal" type="submit">Log in</button>
+      </form>
+      <p class="form-error" id="authError" role="alert" hidden></p>
+    </div>
+
+    <div class="panel" id="profileCard" hidden></div>
+  </section>
+
   <!-- ══ MAP ═════════════════════════════════════════════════════════════ -->
   <section class="view" id="view-map">
     <div class="panel">
@@ -101,6 +156,16 @@
       <p class="sub">Tap the exact spot on the Soweto grid. Your pin stays precise for us —
         authorities only ever receive a <b>150 m blurred</b> coordinate so nobody can work out
         where you were standing.</p>
+    </div>
+    <div class="panel area-picker" id="areaPicker">
+      <h3 class="area-step">1 · Which kasi?</h3>
+      <input id="townshipSearch" type="search" placeholder="Search townships… e.g. Protea Glen"
+        autocomplete="off" aria-label="Search townships">
+      <div class="chips" id="townshipList" role="listbox" aria-label="Soweto townships"></div>
+      <div id="sectionBlock" hidden>
+        <h3 class="area-step" id="sectionTitle">2 · Which part?</h3>
+        <div class="chips" id="sectionList" role="listbox" aria-label="Extensions and zones"></div>
+      </div>
     </div>
     <div class="map-toggle" id="mapToggle" role="group" aria-label="Map style">
       <button type="button" data-mode="street" aria-pressed="true">🗺️ Street map</button>
@@ -167,6 +232,8 @@
       <span class="big">📸</span>
       <b>Tap to capture or choose a photo</b>
       <p class="sub">Vandalised mini-sub · stolen cable · open chamber</p>
+      <p class="sub">Each photo is checked <b>on this phone</b>: hidden GPS, phone model and time
+        are found and removed, and it's shrunk to send fast on data.</p>
       <input type="file" id="fileInput" accept="image/*" capture="environment" multiple hidden>
     </div>
     <div class="shots" id="shots"></div>
@@ -290,8 +357,21 @@
 
 </main>
 
+<!-- First visit: nothing is playable until the agent has a profile. The
+     profile form (#authPanel) is moved in here while logged out. -->
+<div class="gate" id="gate" role="dialog" aria-modal="true" aria-labelledby="gateTitle" hidden>
+  <div class="gate-card">
+    <div class="gate-brand">🐶 GHOST PUPPY GAME STUDIO · GRID GUARDIANS</div>
+    <h1 id="gateTitle">Create your Agent ID</h1>
+    <p class="sub">Every agent needs a profile before entering. No real names. One profile per
+      person. Already have one? Choose <b>Log in</b>.</p>
+    <div id="gateSlot"></div>
+    <p class="sub gate-safety">Not an emergency line. Life in danger? Call <b>10111</b>.</p>
+  </div>
+</div>
+
 <footer>
-  Msotra Gameplay Lab · Grid Guardians — a civic-reporting game for Soweto.<br>
+  Ghost Puppy Game Studio · Grid Guardians — a civic-reporting game for Soweto.<br>
   Not an emergency service. Life in danger? Call <b>10111</b>. Power out? <b>011 375 5555</b>.
 </footer>
 

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en-ZA">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script>
+  try { var t = localStorage.getItem('msotra.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+<title>Grid Guardians Impact</title>
+<meta name="description" content="How Soweto residents are protecting the power grid with anonymous reports.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/portal.css">
+</head>
+<body>
+
+<header class="portal-head">
+  <h1>⚡ Grid Guardians <small>Community impact</small></h1>
+  <span class="spacer"></span>
+  <button class="pbtn" id="themeBtn" type="button"></button>
+  <a class="pbtn" href="/" style="text-decoration:none">Join as an agent →</a>
+</header>
+
+<main>
+  <div class="panel">
+    <h2>Soweto is guarding its grid</h2>
+    <p class="sub">Residents report cable theft, vandalised mini-substations and open chambers anonymously. City Power
+      and SAPS check each report on site. Every number below updates live.</p>
+  </div>
+  <div class="kpis" id="kpis"></div>
+  <div class="cols">
+    <div class="panel"><h2>What's being reported</h2><div id="cats"></div></div>
+    <div class="panel">
+      <h2>Most active townships</h2>
+      <p class="sub">Townships with fewer than 3 reports are not listed, to protect reporters.</p>
+      <div id="towns"></div>
+    </div>
+  </div>
+  <p class="sub" id="updated" style="text-align:center;margin-top:14px"></p>
+</main>
+
+<script type="module">
+  import { $, api, CAT_LABEL, nf, themeButton, hbars } from '/portal.js';
+  themeButton($('#themeBtn'));
+
+  async function load() {
+    const d = await api('/api/public/impact');
+    const t = d.totals;
+    $('#kpis').innerHTML = `
+      <div class="stat"><b>${nf(t.reports)}</b><span>Reports made</span></div>
+      <div class="stat"><b>${nf(t.verified)}</b><span>Confirmed on site</span></div>
+      <div class="stat"><b>${t.townships_reporting}/${t.townships}</b><span>Townships reporting</span></div>
+      <div class="stat"><b>${nf(t.agents)}</b><span>Community agents</span></div>
+      <div class="stat"><b>${nf(t.coins_paid)}</b><span>Reward coins paid</span></div>`;
+    hbars($('#cats'), d.by_category.map((c) => ({ label: CAT_LABEL[c.category] || c.category, value: c.n })), 'No reports yet.');
+    hbars($('#towns'), d.townships.map((z) => ({ label: z.township, value: z.reports, note: `${z.verified} confirmed` })),
+      'Not enough reports yet.');
+    $('#updated').textContent = 'Updated ' + new Date(d.updated_at).toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' });
+  }
+  load().catch(() => { $('#updated').textContent = 'Could not load the latest numbers.'; });
+  const es = new EventSource('/events');
+  let t;
+  ['report', 'verified'].forEach((ev) => es.addEventListener(ev, () => { clearTimeout(t); t = setTimeout(load, 2000); }));
+</script>
+</body>
+</html>

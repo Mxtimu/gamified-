@@ -17,9 +17,12 @@ const api = async (path, opts) => {
 };
 
 const S = {
-  callsign: localStorage.getItem('msotra.callsign') || '',
-  agent: null,
+  agent: null,   // the logged-in profile (session cookie), or null
+  stats: null,   // live site-wide totals: drops, verified, coins_paid, players
+  selfVerified: new Set(), // case refs verified from this browser (avoid double toasts)
   zones: [],
+  sections: [],  // extensions / zones / phases inside each township
+  area: { zoneId: null, sectionId: null }, // township + part chosen in Drop Pin
   boot: null,
   pin: null,
   category: 'cable_theft',
@@ -30,7 +33,7 @@ const S = {
 };
 
 // ── map projection ────────────────────────────────────────────────────────
-const LAT_TOP = -26.200, LAT_BOT = -26.295, LNG_L = 27.790, LNG_R = 27.965;
+const LAT_TOP = -26.190, LAT_BOT = -26.300, LNG_L = 27.765, LNG_R = 27.965; // all Soweto townships
 const MW = 1000, MH = 620;
 const px = (lng) => ((lng - LNG_L) / (LNG_R - LNG_L)) * MW;
 const py = (lat) => ((LAT_TOP - lat) / (LAT_TOP - LAT_BOT)) * MH;
@@ -62,6 +65,7 @@ function show(view) {
   $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${view}`));
   window.scrollTo({ top: 0, behavior: 'smooth' });
   if (view === 'map') requestAnimationFrame(fitStreetMap);
+  if (view === 'net') loadNet();
   if (view === 'wallet') loadWallet();
   if (view === 'hood') loadBoards();
   if (view === 'ghost') { renderStages(); loadAudit(); runScrub(); }
@@ -105,15 +109,15 @@ applyTheme(activeTheme());
 
 // ── bootstrap ─────────────────────────────────────────────────────────────
 async function boot() {
-  const q = S.callsign ? `?callsign=${encodeURIComponent(S.callsign)}` : '';
-  S.boot = await api(`/api/bootstrap${q}`);
+  try { localStorage.removeItem('msotra.callsign'); } catch { /* legacy key, pre-profiles */ }
+  S.boot = await api('/api/bootstrap');
   S.zones = S.boot.zones;
+  S.sections = S.boot.sections || [];
   S.agent = S.boot.agent;
+  S.stats = S.boot.stats;
 
-  $('#homeZone').innerHTML = S.zones
-    .map((z) => `<option value="${z.id}">${z.name} — ${z.landmark}</option>`).join('');
-  if (S.callsign) $('#callsign').value = S.callsign;
-  if (S.agent?.home_zone_id) $('#homeZone').value = S.agent.home_zone_id;
+  $('#homeZone').innerHTML = zoneOptions();
+  $('#registerAvatars').insertAdjacentHTML('beforeend', avatarPicker('reg', S.boot.avatars[0]));
 
   $('#safetyText').textContent = S.boot.safety.prompt;
   $('#safetyRules').innerHTML = S.boot.safety.rules.map((r) => `<li>${r}</li>`).join('');
@@ -121,44 +125,181 @@ async function boot() {
     <div class="stat"><span>${h.name}</span><b style="font-size:17px">${h.number}</b></div>`).join('');
 
   renderHud();
+  renderAreaPicker();
   renderMap();
   renderFeed();
   seedChat();
   renderHqStats();
 }
 
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const zoneOptions = () => '<option value="">Choose your turf…</option>' + [...S.zones]
+  .sort((a, b) => a.name.localeCompare(b.name)).map((z) => `<option value="${z.id}">${esc(z.name)} — ${esc(z.landmark)}</option>`).join('');
+const avatarPicker = (name, selected) => S.boot.avatars.map((av) => `
+  <label class="av"><input type="radio" name="${name}-avatar" value="${av}" ${av === selected ? 'checked' : ''}>
+    <span>${av}</span></label>`).join('');
+
 function renderHud() {
   const a = S.agent;
-  $('#ghostId').textContent = a ? a.ghost_id : 'NOT ENLISTED';
+  $('#ghostId').textContent = a ? a.ghost_id : 'CREATE PROFILE';
+  $('#hudAvatar').textContent = a ? a.avatar : '👤';
   $('#rankName').textContent = a ? `${a.badge} ${a.rank}` : 'Observer';
   $('#coinCount').textContent = a ? a.coins : 0;
-  $('#enlistNote').innerHTML = a
-    ? `Enlisted. Authorities will only ever see <b class="mono" style="color:var(--teal-text)">${a.ghost_id}</b> — never "${a.callsign}", never a number.`
-    : 'Your callsign never leaves this device. We generate an unlinkable ghost handle for you.';
+  $('#hqProfile').innerHTML = a
+    ? `<h2>Welcome back, ${a.avatar} ${esc(a.callsign)} <span class="tag">ENLISTED</span></h2>
+       <p class="sub">Authorities will only ever see <b class="mono" style="color:var(--teal-text)">${a.ghost_id}</b>
+       — never your callsign, never your number. Every verified report pays <b>10 Msotra Coins</b>, automatically.</p>`
+    : `<h2>Agent Setup <span class="tag">NO REAL NAMES</span></h2>
+       <p class="sub">Create your profile to start dropping intel. One profile per person.
+       Every verified report pays <b>10 Msotra Coins</b>, automatically.</p>
+       <button class="btn teal" type="button" data-goto="profile">Create profile / Log in</button>`;
+  renderProfile();
 }
 
-function renderHqStats() {
-  const totals = S.boot.crews.reduce((acc, c) => ({
-    reports: acc.reports + c.reports, verified: acc.verified + c.verified, coins: acc.coins + c.coins,
-  }), { reports: 0, verified: 0, coins: 0 });
+/** Site-wide totals: header chip + HQ cards. Pushed live over SSE. */
+function renderStats() {
+  const s = S.stats || { drops: 0, verified: 0, coins_paid: 0 };
+  $('#dropCount').textContent = s.drops;
+  $('#verifiedCount').textContent = s.verified;
   $('#hqStats').innerHTML = `
-    <div class="stat"><b>${totals.reports}</b><span>Total intel drops</span></div>
-    <div class="stat"><b>${totals.verified}</b><span>Verified by authorities</span></div>
-    <div class="stat"><b>${totals.coins}</b><span>Msotra Coins paid out</span></div>`;
+    <div class="stat"><b>${s.drops}</b><span>Total intel drops</span></div>
+    <div class="stat"><b>${s.verified}</b><span>Verified by authorities</span></div>
+    <div class="stat"><b>${s.coins_paid}</b><span>Msotra Coins paid out</span></div>`;
+}
+const renderHqStats = renderStats;
+
+$('#chipGhost').addEventListener('click', () => show('profile'));
+document.addEventListener('click', (e) => {
+  const g = e.target.closest('[data-goto]');
+  if (g) show(g.dataset.goto);
+});
+
+// ── profile ───────────────────────────────────────────────────────────────
+function renderProfile() {
+  const a = S.agent;
+  // First visit (or logged out): nothing is playable until the agent has an ID.
+  // The same sign-up / log-in form is moved into a full-screen gate.
+  $('#gate').hidden = !!a;
+  document.body.classList.toggle('gated', !a);
+  (a ? $('#view-profile') : $('#gateSlot')).prepend($('#authPanel'));
+  if (!a) setTimeout(() => $('#authPanel input:not([type=radio])')?.focus(), 50);
+  $('#authPanel').hidden = !!a;
+  $('#profileCard').hidden = !a;
+  if (!a) return;
+  $('#profileCard').innerHTML = `
+    <div class="profile-head">
+      <div class="profile-avatar" aria-hidden="true">${a.avatar}</div>
+      <div class="profile-id">
+        <h2>${esc(a.callsign)}</h2>
+        <div class="sub">Ghost handle <b class="mono" style="color:var(--teal-text)">${a.ghost_id}</b>
+          · joined ${esc(String(a.joined).slice(0, 10))}</div>
+      </div>
+      <button class="btn sm ghost" id="logoutBtn" type="button">Log out</button>
+    </div>
+    <p class="sub" style="margin:14px 0 6px">${a.badge} <b>${a.rank}</b> · ${a.xp} XP
+      ${a.next ? `· ${a.xp_to_next} XP to ${a.next}` : '· top rank'}</p>
+    <div class="bar"><i style="width:${a.progress}%"></i></div>
+    <div class="grid3" style="margin-top:14px">
+      <div class="stat"><b>${a.reports}</b><span>My drops</span></div>
+      <div class="stat"><b>${a.verified}</b><span>Verified</span></div>
+      <div class="stat"><b>${a.coins}</b><span>Msotra Coins</span></div>
+    </div>
+    <div class="grid2" style="margin-top:14px">
+      <label class="fld"><span>Home turf</span><select id="profileZone">${zoneOptions()}</select></label>
+    </div>
+    <fieldset class="avatar-pick"><legend>Avatar</legend>${avatarPicker('prof', a.avatar)}</fieldset>
+    <p class="sub">Authorities only ever see <b>${a.ghost_id}</b> — never your callsign, never your number.</p>`;
+  $('#profileZone').value = a.home_zone_id ?? '';
 }
 
-$('#enlistBtn').addEventListener('click', async () => {
-  const cs = $('#callsign').value.trim();
-  if (!cs) return toast('Pick a callsign first, Msotra.');
-  const { agent } = await api('/api/agent', { body: { callsign: cs, home_zone_id: Number($('#homeZone').value) } });
-  S.callsign = cs;
+function authError(msg) {
+  $('#authError').hidden = !msg;
+  $('#authError').textContent = msg || '';
+}
+
+function signedIn(agent, msg) {
   S.agent = agent;
-  localStorage.setItem('msotra.callsign', cs);
+  NET.items.clear(); NET.open.clear(); // "mine" and my reactions are per agent
+  authError('');
   SFX.play('rankup');
   renderHud();
-  toast(`Welcome, ${agent.ghost_id}. Ghost Agent armed.`);
-  show('map');
+  toast(msg);
+}
+
+$('#authPanel').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-auth]');
+  if (!b) return;
+  $$('[data-auth]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  $('#registerForm').hidden = b.dataset.auth !== 'register';
+  $('#loginForm').hidden = b.dataset.auth !== 'login';
+  authError('');
 });
+
+$('#registerForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const v = (n) => f.elements[n].value.trim();
+  if (!/^[A-Za-z0-9_.-]{3,24}$/.test(v('callsign'))) {
+    return authError('Callsign must be 3–24 letters, numbers, dots, dashes or underscores.');
+  }
+  if (!/^\d{4,8}$/.test(v('pin'))) return authError('PIN must be 4–8 digits.');
+  if (v('pin') !== v('pin2')) return authError("The two PINs don't match.");
+  try {
+    const { agent } = await api('/api/register', {
+      body: {
+        callsign: v('callsign'), phone: v('phone'), pin: v('pin'),
+        home_zone_id: Number(v('home_zone_id')) || null,
+        avatar: f.querySelector('input[name="reg-avatar"]:checked')?.value,
+      },
+    });
+    f.reset();
+    signedIn(agent, `Welcome, ${agent.ghost_id}. Ghost Agent armed.`);
+  } catch (err) { authError(err.message); }
+});
+
+$('#loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    const { agent } = await api('/api/login', {
+      body: { callsign: f.elements.callsign.value.trim(), pin: f.elements.pin.value.trim() },
+    });
+    f.reset();
+    signedIn(agent, `Welcome back, ${agent.ghost_id}.`);
+  } catch (err) { authError(err.message); }
+});
+
+$('#profileCard').addEventListener('click', async (e) => {
+  if (!e.target.closest('#logoutBtn')) return;
+  await api('/api/logout', { body: {} });
+  S.agent = null;
+  NET.items.clear(); NET.open.clear();
+  renderHud();
+  toast('Logged out.');
+});
+
+$('#profileCard').addEventListener('change', async (e) => {
+  const body = e.target.id === 'profileZone' ? { home_zone_id: Number(e.target.value) || null }
+    : e.target.name === 'prof-avatar' ? { avatar: e.target.value } : null;
+  if (!body) return;
+  try {
+    S.agent = (await api('/api/profile', { body })).agent;
+    renderHud();
+    toast('Profile saved.');
+  } catch (err) { toast(err.message, 3000); }
+});
+
+/** Re-reads my profile; toasts if coins arrived from a verification elsewhere. */
+async function refreshMe(ref) {
+  if (!S.agent) return;
+  const before = S.agent.coins;
+  try { S.agent = (await api('/api/me')).agent; } catch { S.agent = null; }
+  renderHud();
+  if (S.agent && S.agent.coins > before && !S.selfVerified.has(ref)) {
+    SFX.play('coin');
+    toast(`🪙 +${S.agent.coins - before} Msotra Coins — one of your reports was verified!`, 3500);
+  }
+}
 
 // ── map ───────────────────────────────────────────────────────────────────
 // Two looks: an OpenStreetMap street map (default, tiles proxied + cached by
@@ -219,8 +360,8 @@ function renderStreetMap() {
     L.circleMarker([z.lat, z.lng], {
       radius: 8 + Math.min(6, z.reports), weight: 2,
       color: cssVar('--map-node-line') || '#000', fillColor: healthColour(z.grid_health), fillOpacity: 0.9,
-      className: z.grid_health < 45 ? 'osm-zone hot' : 'osm-zone',
-    }).bindTooltip(`<b>${z.name}</b><br>${z.grid_health}% grid · ${z.reports} drops`, { direction: 'top' })
+      className: (z.grid_health < 45 ? 'osm-zone hot' : 'osm-zone') + (z.id === S.area.zoneId ? ' chosen' : ''),
+    }).bindTooltip(`<b>${esc(z.name)}</b><br>${z.grid_health}% grid · ${z.reports} drops`, { direction: 'top' })
       .addTo(osm.zones);
   }
   if (S.pin) paintPin(); else osm.pin.clearLayers();
@@ -235,11 +376,19 @@ function fitStreetMap() {
 }
 
 function renderGridMap() {
-  const links = [[0, 1], [1, 2], [0, 5], [5, 7], [7, 8], [8, 10], [8, 9], [9, 11], [3, 4], [4, 6], [6, 1], [3, 8], [4, 0]];
-  const zoneById = (i) => S.zones[i];
+  // Power lines: join every township to its two nearest neighbours.
+  const seen = new Set();
+  const links = [];
+  for (const A of S.zones) {
+    const near = S.zones.filter((B) => B !== A)
+      .sort((p, q) => metres(A.lat, A.lng, p.lat, p.lng) - metres(A.lat, A.lng, q.lat, q.lng)).slice(0, 2);
+    for (const B of near) {
+      const key = [A.id, B.id].sort((x, y) => x - y).join('-');
+      if (!seen.has(key)) { seen.add(key); links.push([A, B]); }
+    }
+  }
 
-  const grid = links.filter(([a, b]) => zoneById(a) && zoneById(b)).map(([a, b]) => {
-    const A = zoneById(a), B = zoneById(b);
+  const grid = links.map(([A, B]) => {
     return `<line x1="${px(A.lng)}" y1="${py(A.lat)}" x2="${px(B.lng)}" y2="${py(B.lat)}"
       class="map-link" stroke-width="2" stroke-dasharray="7 6"/>`;
   }).join('');
@@ -247,13 +396,14 @@ function renderGridMap() {
   const nodes = S.zones.map((z) => {
     const x = px(z.lng), y = py(z.lat), c = healthColour(z.grid_health);
     const hot = z.grid_health < 45;
-    return `<g class="zone-hit" data-zone="${z.id}" data-lat="${z.lat}" data-lng="${z.lng}">
-      ${hot ? `<circle cx="${x}" cy="${y}" r="9" fill="${c}" opacity=".5" class="pulse"/>` : ''}
-      <circle class="zone-node" cx="${x}" cy="${y}" r="${9 + Math.min(6, z.reports)}"
-        fill="${c}" opacity=".9" stroke-width="2"/>
-      <text class="zone-label" x="${x}" y="${y - 17}" text-anchor="middle">${z.name}</text>
-      <text class="zone-label zone-sub" x="${x}" y="${y + 26}"
-        text-anchor="middle">${z.grid_health}% grid · ${z.reports} drops</text>
+    const chosen = z.id === S.area.zoneId;
+    return `<g class="zone-hit${chosen ? ' chosen' : ''}" data-zone="${z.id}" data-lat="${z.lat}" data-lng="${z.lng}">
+      <title>${esc(z.name)} — ${z.grid_health}% grid · ${z.reports} drops</title>
+      ${hot ? `<circle cx="${x}" cy="${y}" r="7" fill="${c}" opacity=".5" class="pulse"/>` : ''}
+      <circle class="zone-node" cx="${x}" cy="${y}" r="${(chosen ? 10 : 6) + Math.min(5, z.reports)}"
+        fill="${c}" opacity=".9" stroke-width="${chosen ? 4 : 2}"/>
+      <text class="zone-label" x="${x}" y="${y - 11}" text-anchor="middle"
+        font-size="${chosen ? 14 : 10}">${esc(z.name)}</text>
     </g>`;
   }).join('');
 
@@ -294,6 +444,12 @@ function renderGridMap() {
 function dropPin(lat, lng) {
   S.pin = { lat: Number(lat.toFixed(6)), lng: Number(lng.toFixed(6)) };
   SFX.play('pin');
+  // No township picked yet, or the pin landed outside the picked one: use the nearest.
+  const chosen = zoneById(S.area.zoneId);
+  if (!chosen || metres(chosen.lat, chosen.lng, S.pin.lat, S.pin.lng) > TOWNSHIP_RADIUS_M) {
+    const near = nearestTownship(S.pin.lat, S.pin.lng);
+    if (near) { setTownship(near.id, { fly: false }); return; } // setTownship repaints the pin
+  }
   paintPin();
 }
 
@@ -323,19 +479,105 @@ function paintPin() {
     $('#pinLayer').innerHTML = `
     <g class="pin-drop" transform="translate(${px(S.pin.lng)},${py(S.pin.lat)})">${PIN_SVG}</g>`;
   }
-  // Nearest zone, computed client-side for instant feedback.
-  let best = null, bestD = Infinity;
-  for (const z of S.zones) {
-    const d = Math.hypot((z.lat - S.pin.lat) * 111320, (z.lng - S.pin.lng) * 100000);
-    if (d < bestD) { bestD = d; best = z; }
-  }
+  const best = zoneById(S.area.zoneId) || nearestTownship(S.pin.lat, S.pin.lng);
+  const bestD = metres(best.lat, best.lng, S.pin.lat, S.pin.lng);
   const fz =(v) => (Math.round(v / snap) * snap).toFixed(5);
   $('#mapReadout').innerHTML = `
     Pin: <b>${S.pin.lat.toFixed(5)}, ${S.pin.lng.toFixed(5)}</b> ·
-    zone <b>${best.name}</b> (${Math.round(bestD)} m from ${best.landmark})<br>
+    <b>${esc(areaLabel() || best.name)}</b> (${Math.round(bestD)} m from ${esc(best.landmark)})
+    ${S.area.sectionId ? '' : '<br><span style="color:var(--dim)">Pick the extension / zone above to be exact.</span>'}<br>
     <span style="color:var(--teal-text)">Authorities will receive ${fz(S.pin.lat)}, ${fz(S.pin.lng)} — blurred to 150 m.</span>`;
   renderDraft();
 }
+
+// ── township → extension / zone picker ────────────────────────────────────
+const TOWNSHIP_RADIUS_M = 4000; // same rule as the server's resolveArea()
+const zoneById = (id) => S.zones.find((z) => z.id === id) || null;
+const sectionsOf = (zoneId) => S.sections.filter((s) => s.zone_id === zoneId);
+
+/** Great-circle distance in metres. */
+function metres(lat1, lng1, lat2, lng2) {
+  const R = 6371000, r = (d) => (d * Math.PI) / 180;
+  const a = Math.sin(r(lat2 - lat1) / 2) ** 2 +
+    Math.cos(r(lat1)) * Math.cos(r(lat2)) * Math.sin(r(lng2 - lng1) / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function nearestTownship(lat, lng) {
+  let best = null, bestD = Infinity;
+  for (const z of S.zones) {
+    const d = metres(z.lat, z.lng, lat, lng);
+    if (d < bestD) { bestD = d; best = z; }
+  }
+  return best;
+}
+
+/** "Meadowlands · Zone 9", or just "Protea Glen Ext 12" when the part already names the township. */
+function placeLabel(zone, section) {
+  if (!zone) return '';
+  if (!section) return zone;
+  return section.toLowerCase().startsWith(zone.toLowerCase()) ? section : `${zone} · ${section}`;
+}
+function areaLabel() {
+  const z = zoneById(S.area.zoneId);
+  if (!z) return null;
+  return placeLabel(z.name, S.sections.find((s) => s.id === S.area.sectionId)?.name);
+}
+
+function renderAreaPicker() {
+  const q = $('#townshipSearch').value.trim().toLowerCase();
+  const list = [...S.zones]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .filter((z) => !q || z.name.toLowerCase().includes(q) ||
+      sectionsOf(z.id).some((s) => s.name.toLowerCase().includes(q)));
+  $('#townshipList').innerHTML = list.length
+    ? list.map((z) => `<button type="button" role="option" data-zone="${z.id}"
+        aria-selected="${z.id === S.area.zoneId}">${esc(z.name)}</button>`).join('')
+    : '<span class="none">No township matches that. Drop a pin on the map instead.</span>';
+
+  const z = zoneById(S.area.zoneId);
+  $('#sectionBlock').hidden = !z;
+  if (!z) return;
+  $('#sectionTitle').innerHTML = `2 · Which part of <b>${esc(z.name)}</b>?`;
+  $('#sectionList').innerHTML = sectionsOf(z.id).map((s) => `
+    <button type="button" role="option" data-section="${s.id}"
+      aria-selected="${s.id === S.area.sectionId}">${esc(s.name)}</button>`).join('') +
+    `<button type="button" role="option" class="unsure" data-section=""
+      aria-selected="${S.area.sectionId === null}">Not sure</button>`;
+}
+
+function setTownship(zoneId, { fly = true } = {}) {
+  const z = zoneById(zoneId);
+  if (!z) return;
+  if (S.area.zoneId !== zoneId) S.area = { zoneId, sectionId: null };
+  // A pin left behind in another township would contradict the choice.
+  if (S.pin && metres(z.lat, z.lng, S.pin.lat, S.pin.lng) > TOWNSHIP_RADIUS_M) S.pin = null;
+  renderAreaPicker();
+  renderMap();
+  if (fly) {
+    if (osm) osm.map.flyTo([z.lat, z.lng], 15, { duration: 0.8 });
+    if (!S.pin && $('#mapReadout')) {
+      $('#mapReadout').innerHTML = `<b>${esc(z.name)}</b> — now tap the exact spot on the map.`;
+    }
+  }
+  if (S.pin) paintPin(); else renderDraft();
+}
+
+$('#townshipSearch').addEventListener('input', renderAreaPicker);
+$('#townshipList').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-zone]');
+  if (!b) return;
+  SFX.play('tick');
+  setTownship(Number(b.dataset.zone));
+});
+$('#sectionList').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-section]');
+  if (!b) return;
+  SFX.play('tick');
+  S.area.sectionId = b.dataset.section ? Number(b.dataset.section) : null;
+  renderAreaPicker();
+  if (S.pin) paintPin(); else renderDraft();
+});
 
 $('#sevRow').addEventListener('click', (e) => {
   const b = e.target.closest('button');
@@ -430,33 +672,244 @@ dz.addEventListener('drop', (e) => {
   e.preventDefault(); dz.classList.remove('hot');
   addFiles(e.dataTransfer.files);
 });
-$('#fileInput').addEventListener('change', (e) => addFiles(e.target.files));
+$('#fileInput').addEventListener('change', (e) => { addFiles(e.target.files); e.target.value = ''; });
 
-function addFiles(files) {
-  for (const f of [...files].slice(0, 4 - S.media.length)) {
-    if (!f.type.startsWith('image/')) continue;
-    const fr = new FileReader();
-    fr.onload = () => {
-      S.media.push(fr.result);
+// Each photo is analysed and cleaned ON THIS DEVICE before it is ever sent:
+//  1. read the hidden metadata (GPS, phone model, time taken) so we can show it,
+//  2. decode + redraw it on a canvas — the redraw carries no metadata at all,
+//     converts HEIC/WebP to JPEG where the browser can read them, and shrinks
+//     multi-MB phone photos to ~300 KB so four of them fit in one upload,
+//  3. measure brightness + sharpness so the agent knows if it's usable evidence.
+// The server still strips metadata again (Ghost Agent stage 4) — belt and braces.
+const MAX_PHOTOS = 4;
+const MAX_SIDE = 1600;
+
+async function addFiles(files) {
+  const room = MAX_PHOTOS - S.media.length;
+  if (room <= 0) return toast(`Max ${MAX_PHOTOS} photos per report.`);
+  for (const f of [...files].slice(0, room)) {
+    if (!f.type.startsWith('image/') && !/\.(heic|heif)$/i.test(f.name)) {
+      toast(`"${f.name}" isn't a photo.`);
+      continue;
+    }
+    const item = { id: Math.random().toString(36).slice(2), busy: true, src: null, analysis: null };
+    S.media.push(item);
+    renderShots(); renderDraft();
+    try {
+      Object.assign(item, await processPhoto(f), { busy: false });
       SFX.play('shutter');
-      renderShots();
-      renderDraft();
-    };
-    fr.readAsDataURL(f);
+    } catch (err) {
+      S.media = S.media.filter((m) => m !== item);
+      toast(err.message, 5000);
+    }
+    renderShots(); renderDraft();
   }
 }
 
+async function processPhoto(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const meta = readPhotoMetadata(bytes);
+  let bmp;
+  try {
+    bmp = await createImageBitmap(file); // applies EXIF rotation, so the redraw is upright
+  } catch {
+    throw new Error(`Couldn't open "${file.name}" on this device${meta.format === 'HEIC' ? ' (iPhone HEIC photo)' : ''}. `
+      + 'Use the camera button, or pick a JPG or PNG.');
+  }
+  const scale = Math.min(1, MAX_SIDE / Math.max(bmp.width, bmp.height));
+  const w = Math.round(bmp.width * scale), h = Math.round(bmp.height * scale);
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  canvas.getContext('2d').drawImage(bmp, 0, 0, w, h);
+  const src = canvas.toDataURL('image/jpeg', 0.85);
+  const quality = measureQuality(bmp);
+  const analysis = {
+    ...meta, ...quality,
+    width: bmp.width, height: bmp.height, outW: w, outH: h,
+    bytesIn: file.size, bytesOut: Math.round(((src.length - src.indexOf(',') - 1) * 3) / 4),
+  };
+  bmp.close?.();
+  return { src, analysis };
+}
+
+/** Mean brightness (0–255) and sharpness (variance of the Laplacian) on a small copy. */
+function measureQuality(bmp) {
+  const s = Math.min(1, 256 / Math.max(bmp.width, bmp.height));
+  const w = Math.max(3, Math.round(bmp.width * s)), h = Math.max(3, Math.round(bmp.height * s));
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(bmp, 0, 0, w, h);
+  const d = ctx.getImageData(0, 0, w, h).data;
+  const g = new Float32Array(w * h);
+  let sum = 0;
+  for (let i = 0; i < w * h; i++) {
+    g[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+    sum += g[i];
+  }
+  let n = 0, mean = 0, m2 = 0; // Welford's running variance
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const lap = 4 * g[i] - g[i - 1] - g[i + 1] - g[i - w] - g[i + w];
+      n++; const delta = lap - mean; mean += delta / n; m2 += delta * (lap - mean);
+    }
+  }
+  return { brightness: Math.round(sum / (w * h)), sharpness: Math.round(n > 1 ? m2 / (n - 1) : 0) };
+}
+
+// ── photo metadata reader (JPEG EXIF + PNG eXIf/text; HEIC/WebP detected) ──
+const ascii = (b, o, n) => String.fromCharCode(...b.subarray(o, o + n));
+
+function readPhotoMetadata(b) {
+  const out = { format: 'unknown', gps: null, make: null, model: null, taken: null, software: null, blocks: [] };
+  if (b[0] === 0xff && b[1] === 0xd8) {
+    out.format = 'JPEG';
+    let i = 2;
+    while (i + 4 < b.length) {
+      if (b[i] !== 0xff) { i++; continue; }
+      const mk = b[i + 1];
+      if (mk === 0xda || mk === 0xd9) break; // image data starts: no more metadata
+      if (mk === 0xd8 || mk === 0x01 || (mk >= 0xd0 && mk <= 0xd7)) { i += 2; continue; }
+      const len = (b[i + 2] << 8) | b[i + 3];
+      if (mk === 0xe1 && ascii(b, i + 4, 4) === 'Exif') { out.blocks.push('EXIF'); parseTiff(b, i + 10, out); }
+      else if (mk === 0xe1 && ascii(b, i + 4, 20).startsWith('http://ns.adobe.com')) out.blocks.push('XMP');
+      else if (mk === 0xed) out.blocks.push('IPTC');
+      else if (mk === 0xfe) out.blocks.push('Comment');
+      i += 2 + len;
+    }
+  } else if (b[0] === 0x89 && ascii(b, 1, 3) === 'PNG') {
+    out.format = 'PNG';
+    let i = 8;
+    while (i + 8 <= b.length) {
+      const len = ((b[i] << 24) >>> 0) + (b[i + 1] << 16) + (b[i + 2] << 8) + b[i + 3];
+      const type = ascii(b, i + 4, 4);
+      if (type === 'eXIf') { out.blocks.push('EXIF'); parseTiff(b, i + 8, out); }
+      else if (/^(tEXt|iTXt|zTXt)$/.test(type) && !out.blocks.includes('Text')) out.blocks.push('Text');
+      if (type === 'IEND') break;
+      i += 12 + len;
+    }
+  } else if (ascii(b, 4, 4) === 'ftyp' && /hei|mif|hev/.test(ascii(b, 8, 4))) out.format = 'HEIC';
+  else if (ascii(b, 0, 4) === 'RIFF' && ascii(b, 8, 4) === 'WEBP') out.format = 'WebP';
+  return out;
+}
+
+/** Minimal TIFF/EXIF walker: make, model, software, time taken, GPS position. */
+function parseTiff(b, t, out) {
+  try {
+    const le = b[t] === 0x49; // 'II' little-endian, 'MM' big-endian
+    const u16 = (o) => (le ? b[t + o] | (b[t + o + 1] << 8) : (b[t + o] << 8) | b[t + o + 1]);
+    const u32 = (o) => (le
+      ? b[t + o] + (b[t + o + 1] << 8) + (b[t + o + 2] << 16) + b[t + o + 3] * 16777216
+      : b[t + o] * 16777216 + (b[t + o + 1] << 16) + (b[t + o + 2] << 8) + b[t + o + 3]);
+    const SIZES = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8 };
+    const ifd = (off) => {
+      const tags = {};
+      const n = Math.min(u16(off), 300);
+      for (let k = 0; k < n; k++) {
+        const e = off + 2 + k * 12;
+        const type = u16(e + 2), cnt = u32(e + 4);
+        tags[u16(e)] = { type, cnt, vo: (SIZES[type] || 1) * cnt <= 4 ? e + 8 : u32(e + 8) };
+      }
+      return tags;
+    };
+    const str = (x) => {
+      let s = '';
+      for (let k = 0; k < Math.min(x.cnt, 120) && b[t + x.vo + k]; k++) s += String.fromCharCode(b[t + x.vo + k]);
+      return s.trim() || null;
+    };
+    const num = (x) => (x.type === 3 ? u16(x.vo) : u32(x.vo));
+    const rat = (o) => u32(o) / (u32(o + 4) || 1);
+
+    const ifd0 = ifd(u32(4));
+    if (ifd0[0x10f]) out.make = str(ifd0[0x10f]);
+    if (ifd0[0x110]) out.model = str(ifd0[0x110]);
+    if (ifd0[0x131]) out.software = str(ifd0[0x131]);
+    if (ifd0[0x8769]) {
+      const ex = ifd(num(ifd0[0x8769]));
+      if (ex[0x9003]) out.taken = str(ex[0x9003]);
+    }
+    if (!out.taken && ifd0[0x132]) out.taken = str(ifd0[0x132]);
+    if (ifd0[0x8825]) {
+      const gp = ifd(num(ifd0[0x8825]));
+      if (gp[2] && gp[4]) {
+        const dms = (x) => rat(x.vo) + rat(x.vo + 8) / 60 + rat(x.vo + 16) / 3600;
+        let lat = dms(gp[2]), lng = dms(gp[4]);
+        if (gp[1] && str(gp[1]) === 'S') lat = -lat;
+        if (gp[3] && str(gp[3]) === 'W') lng = -lng;
+        if (Number.isFinite(lat) && Number.isFinite(lng) && (lat || lng)) out.gps = { lat, lng };
+      }
+    }
+  } catch { /* malformed EXIF: irrelevant, the canvas redraw drops it all anyway */ }
+}
+
+/** Turns measurements into a verdict + plain-language findings. */
+function photoVerdict(a) {
+  const issues = [];
+  if (a.brightness < 45) issues.push(['bad', '🌑', 'Very dark — hard for City Power to see the damage.']);
+  else if (a.brightness > 225) issues.push(['warn', '☀️', 'Very bright / washed out.']);
+  if (a.sharpness < 40) issues.push(['bad', '🌫️', 'Blurry — hold still or lean on something.']);
+  else if (a.sharpness < 110) issues.push(['warn', '🔍', 'A little soft, details may be hard to read.']);
+  if (Math.min(a.width, a.height) < 480) issues.push(['warn', '📐', 'Low resolution.']);
+  const bad = issues.some(([lvl]) => lvl === 'bad');
+  return {
+    level: bad ? 'bad' : issues.length ? 'warn' : 'ok',
+    label: bad ? 'Weak evidence' : issues.length ? 'Usable evidence' : 'Strong evidence',
+    issues,
+  };
+}
+
+const kb = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+
 function renderShots() {
-  $('#shots').innerHTML = S.media.map((src, i) => `
-    <div class="shot"><img src="${src}" alt="evidence ${i + 1}">
-      <button class="x" data-i="${i}" title="Remove">✕</button>
-      <div class="scrub">EXIF WIPES ON SEND</div></div>`).join('');
+  $('#shots').innerHTML = S.media.map((m, i) => {
+    if (m.busy) {
+      return `<div class="shot-card"><div class="shot shot-busy">🔍</div>
+        <div class="analysis"><b>Analysing photo ${i + 1}…</b>
+        <p class="sub">Finding hidden data and checking quality, on this phone.</p></div></div>`;
+    }
+    const a = m.analysis, v = photoVerdict(a);
+    const removed = [
+      a.gps ? `<li class="hit">🛰️ <b>GPS location</b> where you stood
+        (<span class="mono">${a.gps.lat.toFixed(5)}, ${a.gps.lng.toFixed(5)}</span>) → <b>removed</b></li>`
+        : '<li>🛰️ No GPS location inside this photo</li>',
+      (a.make || a.model) ? `<li class="hit">📱 Phone model “${esc([a.make, a.model].filter(Boolean).join(' '))}” → <b>removed</b></li>` : '',
+      a.taken ? `<li class="hit">🕒 Exact time taken (${esc(a.taken)}) → <b>removed</b></li>` : '',
+      a.software ? `<li class="hit">⚙️ Software “${esc(a.software)}” → <b>removed</b></li>` : '',
+      a.blocks.filter((x) => x !== 'EXIF').length
+        ? `<li class="hit">🧾 Hidden ${a.blocks.filter((x) => x !== 'EXIF').join(', ')} data → <b>removed</b></li>` : '',
+    ].join('');
+    const inPins = a.gps && a.gps.lat < LAT_TOP && a.gps.lat > LAT_BOT && a.gps.lng > LNG_L && a.gps.lng < LNG_R;
+    return `<div class="shot-card">
+      <div class="shot"><img src="${m.src}" alt="Evidence photo ${i + 1}">
+        <button class="x" data-id="${m.id}" title="Remove photo" aria-label="Remove photo ${i + 1}">✕</button>
+        <div class="scrub">METADATA REMOVED</div></div>
+      <div class="analysis">
+        <div class="verdict ${v.level}">${v.level === 'ok' ? '✅' : v.level === 'warn' ? '🟡' : '⚠️'} ${v.label}</div>
+        <ul>${removed}
+          ${v.issues.map(([lvl, icon, text]) => `<li class="q-${lvl}">${icon} ${text}</li>`).join('')
+            || '<li class="q-ok">👌 Bright and sharp enough to read</li>'}
+          <li class="dim">${a.format} ${a.width}×${a.height}, ${kb(a.bytesIn)} → sends as ${a.outW}×${a.outH}, ${kb(a.bytesOut)}</li>
+        </ul>
+        ${v.level === 'bad' ? '<p class="sub q-note">Only retake it if you can do so <b>from cover</b>. A weak photo plus good intel still helps.</p>' : ''}
+        ${inPins && !S.pin ? `<button class="btn sm ghost" type="button" data-usegps="${m.id}">📍 Use where this was taken as my pin</button>` : ''}
+      </div></div>`;
+  }).join('');
 }
 $('#shots').addEventListener('click', (e) => {
-  const b = e.target.closest('button.x');
-  if (!b) return;
-  S.media.splice(Number(b.dataset.i), 1);
-  renderShots(); renderDraft();
+  const x = e.target.closest('button.x');
+  if (x) {
+    S.media = S.media.filter((m) => m.id !== x.dataset.id);
+    renderShots(); renderDraft();
+    return;
+  }
+  const g = e.target.closest('button[data-usegps]');
+  if (g) {
+    const { gps } = S.media.find((m) => m.id === g.dataset.usegps).analysis;
+    dropPin(gps.lat, gps.lng); // stays on our server; authorities get the 150 m cell
+    renderShots();
+    toast('Pin dropped where the photo was taken. Authorities only get a 150 m area.', 3500);
+  }
 });
 
 function renderDraft() {
@@ -465,21 +918,21 @@ function renderDraft() {
     <div class="grid3" style="margin-bottom:10px">
       <div class="stat"><b>${S.pin ? '✓' : '—'}</b><span>Pin dropped</span></div>
       <div class="stat"><b>${S.chat.filter((m) => m.author === 'agent').length}</b><span>Intel lines</span></div>
-      <div class="stat"><b>${S.media.length}</b><span>Photos</span></div>
+      <div class="stat"><b>${S.media.filter((m) => !m.busy).length}</b><span>Photos</span></div>
     </div>
+    ${areaLabel() ? `📍 <b>${esc(areaLabel())}</b><br>` : ''}
     <b>${CAT_LABEL[S.category]}</b> · severity ${S.severity}/5 · sender <span class="mono"
-      style="color:var(--teal-text)">${agentLine}</span>`;
-  $('#transmitBtn').disabled = !S.pin;
+      style="color:var(--teal-text)">${agentLine}</span>
+    ${S.media.some((m) => m.busy) ? '<p class="sub">⏳ Still analysing a photo…</p>' : ''}`;
+  $('#transmitBtn').disabled = !S.pin || S.media.some((m) => m.busy);
 }
 
 // ── transmit ──────────────────────────────────────────────────────────────
 $('#transmitBtn').addEventListener('click', async () => {
   if (!S.pin) return toast('Drop a pin first.');
-  if (!S.callsign) {
-    const cs = 'Ghost' + Math.floor(Math.random() * 9000 + 1000);
-    S.callsign = cs;
-    localStorage.setItem('msotra.callsign', cs);
-    $('#callsign').value = cs;
+  if (!S.agent) {
+    toast('Create your profile (or log in) first — your draft is kept.', 3200);
+    return show('profile');
   }
   const btn = $('#transmitBtn');
   btn.disabled = true;
@@ -489,10 +942,10 @@ $('#transmitBtn').addEventListener('click', async () => {
   try {
     const res = await api('/api/reports', {
       body: {
-        callsign: S.callsign, category: S.category, severity: S.severity,
+        category: S.category, severity: S.severity,
         narrative: S.chat.filter((m) => m.author === 'agent').map((m) => m.body).join('. '),
-        lat: S.pin.lat, lng: S.pin.lng, media: S.media, chat: S.chat,
-        home_zone_id: Number($('#homeZone').value) || undefined,
+        lat: S.pin.lat, lng: S.pin.lng, media: S.media.map((m) => m.src), chat: S.chat,
+        zone_id: S.area.zoneId, section_id: S.area.sectionId,
       },
     });
     S.agent = res.agent;
@@ -500,14 +953,18 @@ $('#transmitBtn').addEventListener('click', async () => {
     await proofBurst();
     renderHud();
     ghostReceipt(res);
-    S.media = []; S.pin = null;
-    renderShots(); seedChat(); renderMap(); renderDraft(); renderFeed();
+    if (res.media_rejected) {
+      toast(`${res.media_rejected} photo${res.media_rejected > 1 ? 's' : ''} couldn't be read and ${res.media_rejected > 1 ? 'were' : 'was'} not sent.`, 4500);
+    }
+    S.media = []; S.pin = null; S.area = { zoneId: null, sectionId: null };
+    $('#townshipSearch').value = '';
+    renderShots(); seedChat(); renderAreaPicker(); renderMap(); renderFeed();
   } catch (e) {
     hideSafetyLoader();
     toast('Transmit failed: ' + e.message, 4000);
   } finally {
-    btn.disabled = false;
     btn.textContent = '⚡ Transmit to City Power / SAPS';
+    renderDraft();
   }
 });
 
@@ -555,7 +1012,7 @@ function ghostReceipt(res) {
   wrap.innerHTML = `<div class="modal">
     <h2>👻 Ghost Agent Receipt</h2>
     <p class="sub">Case <b class="mono" style="color:var(--amber-text)">${res.report.ref}</b> ·
-      ${res.report.zone} (${res.report.crew}) · forwarded to
+      ${esc(placeLabel(res.report.zone, res.report.section))} (${res.report.crew}) · forwarded to
       <b>${g.forwarded_to.length ? g.forwarded_to.join(' + ').toUpperCase() : 'NOBODY — BLOCKED'}</b></p>
 
     <div style="margin-top:12px">
@@ -595,12 +1052,16 @@ function ghostReceipt(res) {
 
 async function verifyCase(ref) {
   try {
+    S.selfVerified.add(ref);
     const v = await api('/api/verify', { body: { ref, authority: 'City Power Control' } });
-    S.agent = v.agent;
+    // The Control Room can verify anyone's case; only update the HUD if it's mine.
+    const mine = S.agent && v.agent.ghost_id === S.agent.ghost_id;
+    if (mine) S.agent = (await api('/api/me')).agent;
     renderHud();
     SFX.play('coin');
-    toast(`✅ ${ref} verified — +${v.coins} Msotra Coins`);
-    if (v.rank_up || v.rank !== 'Observer') celebrateRank(v);
+    toast(mine ? `✅ ${ref} verified — +${v.coins} Msotra Coins to you`
+      : `✅ ${ref} verified — +${v.coins} Msotra Coins paid to ${v.agent.ghost_id}`);
+    if (mine && (v.rank_up || v.rank !== 'Observer')) celebrateRank(v);
     renderFeed(); loadBoards();
     if ($('#view-wallet').classList.contains('active')) loadWallet();
   } catch (e) { toast(e.message, 3000); }
@@ -627,7 +1088,7 @@ async function renderFeed() {
     <div class="row">
       <span class="badge ${r.status}">${r.status}</span>
       <div style="flex:1;min-width:0">
-        <b>${CAT_LABEL[r.category] || r.category}</b> · ${r.zone}
+        <b>${CAT_LABEL[r.category] || r.category}</b> · ${esc(placeLabel(r.zone, r.section))}
         <div style="color:var(--dim);font-size:11px">${r.ref} · sev ${r.severity}/5 ·
           ${r.media} photo${r.media === 1 ? '' : 's'} · anonymous</div>
       </div>
@@ -635,14 +1096,180 @@ async function renderFeed() {
     </div>`).join('') : '<p class="sub">No drops yet. Be the first Guardian tonight.</p>';
 }
 
-// ── wallet ────────────────────────────────────────────────────────────────
-async function loadWallet() {
-  if (!S.callsign) {
-    $('#walletBalance').textContent = '0';
-    $('#store').innerHTML = '<p class="sub">Enlist on the HQ tab to open a wallet.</p>';
+// ── Agent Net: everyone's reports, reactions and threads ──────────────────
+const REACT = [
+  ['seen', '👀', 'I saw this too'],
+  ['confirm', '✅', 'Confirmed — still like this'],
+  ['careful', '⚠️', 'Danger — everyone keep away'],
+  ['respect', '💪', 'Respect, Guardian'],
+];
+const NET = { items: new Map(), next: null, loading: false, open: new Set() };
+
+const fmtWindow = (iso) => {
+  const d = new Date(iso);
+  return `${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}, `
+    + `~${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
+};
+
+function netCard(it) {
+  return `<article class="net-card" data-ref="${it.ref}">
+    <header class="net-head">
+      <span class="badge ${esc(it.status)}">${esc(it.status)}</span>
+      <b>${CAT_LABEL[it.category] || esc(it.category)}</b> · severity ${it.severity}/5
+      ${it.mine ? '<span class="net-mine">YOUR REPORT</span>' : ''}
+      <div class="net-meta">📍 ${esc(placeLabel(it.zone, it.section))} · near ${esc(it.landmark)} · area ±150 m · ${fmtWindow(it.observed_window)}</div>
+    </header>
+    ${it.photos.length ? `<div class="net-photos">${it.photos.map((p, i) => `
+      <a href="${p}" target="_blank" rel="noopener"><img src="${p}" loading="lazy" alt="Evidence photo ${i + 1} for ${it.ref}"></a>`).join('')}</div>` : ''}
+    ${it.description ? `<p class="net-desc">${esc(it.description)}</p>`
+      : '<p class="sub">Description held back by Ghost Agent.</p>'}
+    <div class="net-actions">
+      ${REACT.map(([k, emoji, label]) => `
+        <button type="button" class="react" data-react="${k}" title="${label}" aria-label="${label}"
+          aria-pressed="${it.my_reactions.includes(k)}">${emoji} <span>${it.reactions[k] || 0}</span></button>`).join('')}
+      <button type="button" class="react" data-thread aria-expanded="${NET.open.has(it.ref)}">💬 <span class="cc">${it.comments}</span></button>
+      <button type="button" class="react" data-showmap title="Show the 150 m area on the map">🗺️ Area</button>
+    </div>
+    <div class="net-thread" ${NET.open.has(it.ref) ? '' : 'hidden'}></div>
+  </article>`;
+}
+
+async function loadNet(more = false) {
+  if (!S.agent || NET.loading) return;
+  NET.loading = true;
+  try {
+    const q = more && NET.next ? `?before=${NET.next}` : '';
+    const { items, next } = await api(`/api/net${q}`);
+    if (!more) NET.items.clear();
+    for (const it of items) NET.items.set(it.ref, it);
+    NET.next = next;
+    renderNet();
+  } catch (e) {
+    $('#netList').innerHTML = `<p class="sub">Couldn't load Agent Net: ${esc(e.message)}</p>`;
+  } finally { NET.loading = false; }
+}
+
+function renderNet() {
+  const items = [...NET.items.values()];
+  $('#netList').innerHTML = items.length ? items.map(netCard).join('')
+    : '<p class="sub">No reports yet. Be the first — tap “Post a report”.</p>';
+  $('#netMore').hidden = !NET.next;
+  for (const ref of NET.open) loadThread(ref);
+}
+
+function updateCard(ref) {
+  const it = NET.items.get(ref);
+  const el = document.querySelector(`.net-card[data-ref="${ref}"]`);
+  if (!it || !el) return;
+  const thread = el.querySelector('.net-thread');
+  const draft = thread.querySelector('textarea')?.value;
+  el.outerHTML = netCard(it);
+  if (NET.open.has(ref)) loadThread(ref, draft);
+}
+
+async function loadThread(ref, draft = '') {
+  const el = document.querySelector(`.net-card[data-ref="${ref}"] .net-thread`);
+  if (!el) return;
+  try {
+    const { comments, my_alias } = await api(`/api/reports/${ref}/comments`);
+    const keep = el.querySelector('textarea')?.value || draft;
+    el.innerHTML = `
+      <div class="comments">${comments.length ? comments.map((c) => `
+        <div class="comment ${c.is_me ? 'me' : ''} ${c.is_reporter ? 'reporter' : ''}">
+          <b>${esc(c.author)}${c.is_me ? ' (you)' : ''}</b>
+          <span class="when">${esc(String(c.created_at).slice(11, 16))}</span>
+          <p>${esc(c.body)}</p></div>`).join('')
+        : '<p class="sub">No messages yet. Seen it too? Say so — never say who you are.</p>'}</div>
+      <form class="comment-form">
+        <label class="sub" for="cf-${ref}">Posting as <b>${esc(my_alias)}</b> in this thread only</label>
+        <div class="row">
+          <textarea id="cf-${ref}" maxlength="500" rows="2" placeholder="What did you see? No names, numbers or addresses."></textarea>
+          <button class="btn sm teal" type="submit">Send</button>
+        </div>
+      </form>`;
+    el.querySelector('textarea').value = keep;
+    const list = el.querySelector('.comments');
+    list.scrollTop = list.scrollHeight;
+  } catch (e) { el.innerHTML = `<p class="sub">${esc(e.message)}</p>`; }
+}
+
+$('#netMore').addEventListener('click', () => loadNet(true));
+
+$('#netList').addEventListener('click', async (e) => {
+  const card = e.target.closest('.net-card');
+  if (!card) return;
+  const ref = card.dataset.ref;
+  const it = NET.items.get(ref);
+
+  const r = e.target.closest('button[data-react]');
+  if (r) {
+    try {
+      const { reactions, mine } = await api(`/api/reports/${ref}/react`, { body: { kind: r.dataset.react } });
+      it.reactions = reactions;
+      it.my_reactions = mine ? [...new Set([...it.my_reactions, r.dataset.react])]
+        : it.my_reactions.filter((k) => k !== r.dataset.react);
+      SFX.play('tick');
+      updateCard(ref);
+    } catch (err) { toast(err.message, 3000); }
     return;
   }
-  const w = await api(`/api/wallet?callsign=${encodeURIComponent(S.callsign)}`);
+  if (e.target.closest('button[data-thread]')) {
+    if (NET.open.has(ref)) NET.open.delete(ref); else NET.open.add(ref);
+    updateCard(ref);
+    return;
+  }
+  if (e.target.closest('button[data-showmap]')) showAreaOnMap(it);
+});
+
+$('#netList').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const card = e.target.closest('.net-card');
+  const ta = e.target.querySelector('textarea');
+  const text = ta.value.trim();
+  if (!text) return;
+  try {
+    const { findings, comments } = await api(`/api/reports/${card.dataset.ref}/comments`, { body: { body: text } });
+    ta.value = '';
+    if (findings.length) {
+      toast(`Ghost Agent removed ${findings.map((f) => f.rule.replace(/_/g, ' ')).join(', ')} from your message.`, 4000);
+    }
+    NET.items.get(card.dataset.ref).comments = comments;
+    updateCard(card.dataset.ref);
+  } catch (err) { toast(err.message, 3500); }
+});
+$('#netList').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && e.target.matches('.comment-form textarea')) {
+    e.preventDefault();
+    e.target.form.requestSubmit();
+  }
+});
+
+/** Opens the street map zoomed to a report's blurred 150 m cell. */
+function showAreaOnMap(it) {
+  if (mapMode !== 'street' && window.L) { mapMode = 'street'; renderMap(); }
+  show('map');
+  setTimeout(() => {
+    if (!osm) return toast(`Area: ${it.lat.toFixed(4)}, ${it.lng.toFixed(4)} (±150 m)`, 4000);
+    const h = 0.00135 / 2;
+    const bounds = [[it.lat - h, it.lng - h], [it.lat + h, it.lng + h]];
+    osm.map.invalidateSize();
+    osm.needsFit = false;
+    osm.view?.remove();
+    osm.view = L.rectangle(bounds, { className: 'osm-view', weight: 3, dashArray: '4 4', fillOpacity: 0.15, interactive: false })
+      .bindTooltip(`${CAT_LABEL[it.category]} · ${it.ref}`, { permanent: true, direction: 'top' })
+      .addTo(osm.map);
+    osm.map.fitBounds(bounds, { maxZoom: 17 });
+  }, 80);
+}
+
+// ── wallet ────────────────────────────────────────────────────────────────
+async function loadWallet() {
+  if (!S.agent) {
+    $('#walletBalance').textContent = '0';
+    $('#store').innerHTML = '<p class="sub">Create a profile (or log in) on the Profile tab to open a wallet.</p>';
+    return;
+  }
+  const w = await api('/api/wallet');
   S.agent = w.agent;
   renderHud();
   $('#walletBalance').textContent = w.agent.coins;
@@ -689,7 +1316,7 @@ $('#store').addEventListener('click', async (e) => {
   const b = e.target.closest('button[data-sku]');
   if (!b) return;
   try {
-    const r = await api('/api/redeem', { body: { callsign: S.callsign, sku: b.dataset.sku } });
+    const r = await api('/api/redeem', { body: { sku: b.dataset.sku } });
     S.agent = r.agent;
     SFX.play('voucher');
     renderHud();
@@ -737,9 +1364,9 @@ async function loadBoards() {
         <small style="color:var(--dim)">${z.grid_health}%</small></td></tr>`).join('');
 
   $('#agentBoard').innerHTML = b.agents.length ? b.agents.map((a, i) => `
-    <tr class="${a.callsign === S.callsign ? 'me' : ''}">
+    <tr class="${a.ghost_id === S.agent?.ghost_id ? 'me' : ''}">
       <td><div class="pos p${i + 1}">${i + 1}</div></td>
-      <td><span class="mono">${a.ghost_id}</span>${a.callsign === S.callsign ? ' <b style="color:var(--amber-text)">(you)</b>' : ''}
+      <td>${a.avatar} <span class="mono">${a.ghost_id}</span>${a.ghost_id === S.agent?.ghost_id ? ' <b style="color:var(--amber-text)">(you)</b>' : ''}
         <div style="color:var(--dim);font-size:11px">${a.home_zone || 'unassigned'}</div></td>
       <td>${a.rank}</td><td>${a.xp}</td><td>${a.verified || 0}</td></tr>`).join('')
     : '<tr><td colspan="5" style="color:var(--dim)">No agents enlisted yet.</td></tr>';
@@ -795,7 +1422,7 @@ let escTimer = null, escClues = [], escSolved = 0, escLeft = 300, escSession = n
 
 $('#startEscape').addEventListener('click', async () => {
   const team = $('#teamName').value.trim() || 'Team Msotra';
-  const r = await api('/api/escape/start', { body: { team_name: team, zone_id: Number($('#homeZone').value) || null } });
+  const r = await api('/api/escape/start', { body: { team_name: team, zone_id: S.agent?.home_zone_id ?? null } });
   escSession = r.session; escClues = r.clues; escSolved = 0; escLeft = 300;
   SFX.play('blackout');
   const ov = document.createElement('div');
@@ -864,7 +1491,7 @@ async function endEscape(won) {
   const r = await api('/api/escape/finish', {
     body: {
       id: escSession?.id, clues_found: escSolved, solved: won,
-      seconds_left: Math.max(0, escLeft), callsign: S.callsign || undefined,
+      seconds_left: Math.max(0, escLeft),
     },
   });
   $('#escapeBoardPanel').hidden = false;
@@ -875,7 +1502,7 @@ async function endEscape(won) {
   if (won) {
     SFX.play('rankup');
     toast('💡 Lights restored! +60 Msotra Coins to the team captain.', 4000);
-    if (S.callsign) { const w = await api(`/api/wallet?callsign=${encodeURIComponent(S.callsign)}`); S.agent = w.agent; renderHud(); }
+    if (S.agent) { S.agent = (await api('/api/me')).agent; renderHud(); }
   } else {
     SFX.play('blackout');
     toast('Time up — Zone 9 stays dark. Run it again.', 3500);
@@ -888,9 +1515,46 @@ $('#abortEscape').addEventListener('click', () => endEscape(false));
 try {
   const es = new EventSource('/events');
   es.addEventListener('report', () => { renderFeed(); });
+  // Agent Net live: new reports, new messages, reactions from other agents.
+  const netActive = () => S.agent && $('#view-net').classList.contains('active');
+  es.addEventListener('net', async (e) => {
+    if (!netActive()) return;
+    const { ref } = JSON.parse(e.data);
+    try {
+      const { item } = await api(`/api/net/item?ref=${encodeURIComponent(ref)}`);
+      NET.items = new Map([[item.ref, item], ...NET.items]);
+      renderNet();
+    } catch { /* ignore */ }
+  });
+  es.addEventListener('comment', (e) => {
+    const { ref, comments } = JSON.parse(e.data);
+    const it = NET.items.get(ref);
+    if (!it || !netActive()) return;
+    it.comments = comments;
+    updateCard(ref);
+  });
+  es.addEventListener('reaction', (e) => {
+    const { ref, reactions } = JSON.parse(e.data);
+    const it = NET.items.get(ref);
+    if (!it || !netActive()) return;
+    it.reactions = reactions;
+    updateCard(ref);
+  });
+  es.addEventListener('verified', (e) => {
+    const { ref, outcome } = JSON.parse(e.data);
+    const it = NET.items.get(ref);
+    if (it && netActive()) { it.status = outcome; updateCard(ref); }
+  });
+
+  // Live totals: every drop / verification anywhere updates the counters.
+  es.addEventListener('stats', (e) => { S.stats = JSON.parse(e.data); renderStats(); });
+  es.addEventListener('open', () => {
+    api('/api/stats').then((s) => { S.stats = s; renderStats(); }).catch(() => {});
+  });
   es.addEventListener('verified', (e) => {
     const d = JSON.parse(e.data);
     if (d.outcome === 'verified') {
+      refreshMe(d.ref); // coins land automatically — tell me if one of mine was verified
       loadBoards();
       if (!$('#view-wallet').classList.contains('active')) return;
       loadWallet();

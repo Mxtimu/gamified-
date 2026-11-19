@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en-ZA">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<script>
+  try { var t = localStorage.getItem('msotra.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+<title>Grid Guardians Case Desk</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%8F%9B%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/portal.css">
+</head>
+<body>
+
+<header class="portal-head">
+  <h1>⚡ Grid Guardians <small>Case desk · City Power / SAPS</small></h1>
+  <span class="spacer"></span>
+  <button class="pbtn" id="themeBtn" type="button"></button>
+  <button class="pbtn" id="logoutBtn" type="button">Log out</button>
+</header>
+
+<main>
+  <div class="notice ok">Every report here is anonymous: the reporter's identity is never sent, the location is
+    blurred to about 150 m, and descriptions have names, numbers and addresses removed. Please mark a case
+    <b>verified</b> only once a crew has confirmed it on site. Verifying pays the reporter a reward.</div>
+  <div class="kpis" id="kpis"></div>
+  <div class="filters">
+    <select id="fStatus" aria-label="Status">
+      <option value="open">Open cases</option><option value="verified">Verified</option>
+      <option value="rejected">Rejected</option><option value="">All</option>
+    </select>
+    <select id="fTown" aria-label="Township"><option value="">All townships</option></select>
+    <input id="fRef" type="search" placeholder="Case ref, e.g. GG-12" aria-label="Case reference">
+  </div>
+  <div class="rcards" id="list"></div>
+  <button class="pbtn" id="more" type="button" hidden style="margin-top:10px">Load older</button>
+</main>
+
+<script type="module">
+  import { $, esc, api, nf, toast, themeButton, gate, reportCard, wireDecisions } from '/portal.js';
+
+  let next = null;
+  gate('partner', async () => {
+    themeButton($('#themeBtn'));
+    $('#logoutBtn').addEventListener('click', async () => { await api('/api/staff/logout', {}); location.reload(); });
+    const { zones } = await api('/api/partner/zones');
+    $('#fTown').insertAdjacentHTML('beforeend', zones.map((z) => `<option value="${z.id}">${esc(z.name)}</option>`).join(''));
+    let t;
+    ['#fStatus', '#fTown'].forEach((s) => $(s).addEventListener('change', () => load()));
+    $('#fRef').addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => load(), 300); });
+    $('#more').addEventListener('click', () => load(true));
+    wireDecisions($('#list'), '/api/partner/verify', () => load());
+    load();
+    const es = new EventSource('/events');
+    es.addEventListener('report', () => { if ($('#fStatus').value === 'open') load(); });
+    setInterval(() => load(), 120_000);
+  });
+
+  async function load(more = false) {
+    try {
+      const p = new URLSearchParams({ status: $('#fStatus').value || 'all' });
+      if ($('#fTown').value) p.set('zone_id', $('#fTown').value);
+      if ($('#fRef').value.trim()) p.set('q', $('#fRef').value.trim());
+      if (more && next) p.set('before', next);
+      const d = await api('/api/partner/reports?' + p);
+      next = d.next;
+      const html = d.items.map((r) => reportCard(r, { decide: true, authorityPicker: true,
+        ageHours: r.status === 'submitted' || r.status === 'forwarded'
+          ? Math.round((Date.now() - new Date(r.created_at)) / 36e5) : null })).join('');
+      if (more) $('#list').insertAdjacentHTML('beforeend', html);
+      else $('#list').innerHTML = html || '<p class="sub">No cases match.</p>';
+      $('#more').hidden = !d.next;
+      if (!more) {
+        const open = await api('/api/partner/reports?status=open');
+        const overdue = open.items.filter((r) => Date.now() - new Date(r.created_at) > 864e5).length;
+        $('#kpis').innerHTML = `
+          <div class="stat"><b>${nf(open.items.length)}${open.next ? '+' : ''}</b><span>Open cases</span></div>
+          <div class="stat"><b>${nf(overdue)}</b><span>Waiting over 24 h</span></div>`;
+      }
+    } catch (err) {
+      if (err.status === 401) return location.reload();
+      toast(err.message);
+    }
+  }
+</script>
+</body>
+</html>

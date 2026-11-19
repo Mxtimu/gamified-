@@ -20,7 +20,7 @@ MSG
 fi
 
 echo
-echo "  MSOTRA GAMEPLAY LAB - Grid Guardians"
+echo "  GHOST PUPPY GAME STUDIO - Grid Guardians"
 echo "  Open http://localhost:7788 in your browser."
 echo "  Press Ctrl+C to stop."
 echo

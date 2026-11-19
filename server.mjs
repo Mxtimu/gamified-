@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  MSOTRA GAMEPLAY LAB — "Spaza Defense & Grid Guardians"
+//  GHOST PUPPY GAME STUDIO — "Spaza Defense & Grid Guardians"
 //  Zero-dependency Node server: static frontend + civic-reporting API +
 //  Ghost Agent sanitisation boundary + Msotra Coin economy.
 // ═══════════════════════════════════════════════════════════════════════════
@@ -9,9 +9,9 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { extname, join, normalize, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { db, DATA_DIR, MEDIA_DIR, nearestZone, logSanitization } from './src/db.mjs';
+import { db, DATA_DIR, MEDIA_DIR, resolveArea, logSanitization } from './src/db.mjs';
 import {
-  ghostId, caseRef, scrubText, fuzzGeo, fuzzTimestamp,
+  ghostId, caseRef, scrubText, fuzzGeo, fuzzTimestamp, threadAlias,
   stripImageMetadata, sha256, buildMunicipalPayload, assertNoLeak, assertGeoBlurred,
   MUNICIPAL_ALLOWLIST,
 } from './src/ghost.mjs';
@@ -19,6 +19,13 @@ import {
   RANKS, rankFor, quoteReward, creditAgent, awardXp, CATALOGUE, redeem,
   crewLeaderboard, zoneLeaderboard, agentLeaderboard, hotZonesNear,
 } from './src/economy.mjs';
+import {
+  AVATARS, normalizePhone, phoneHash, hashPin, checkPin, ensureDevice, startSession,
+  endSession, sessionAgent, requireAgent, rateLimit, clearRateLimit, httpError,
+} from './src/auth.mjs';
+import { CLOUD_ENABLED, queueRow, queuePhoto, startCloudSync, cloudStatus } from './src/supabase.mjs';
+import { staffRoutes, tileStats } from './src/staff.mjs';
+import { staffRole } from './src/auth.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(ROOT, 'public');
@@ -53,7 +60,8 @@ async function readBody(req) {
     chunks.push(c);
   }
   if (!chunks.length) return {};
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  catch { throw httpError(400, 'Request body must be valid JSON.'); }
 }
 
 // Live event stream powering the Hood Leaderboard + intel feed.
@@ -67,26 +75,84 @@ function broadcast(event, data) {
 
 // ── agents ─────────────────────────────────────────────────────────────────
 
-function upsertAgent(callsign, homeZoneId) {
-  const clean = String(callsign || '').trim().slice(0, 24) || 'Anon';
-  const existing = db.prepare('SELECT * FROM agents WHERE callsign = ?').get(clean);
-  if (existing) {
-    if (homeZoneId && homeZoneId !== existing.home_zone_id) {
-      db.prepare('UPDATE agents SET home_zone_id = ? WHERE id = ?').run(homeZoneId, existing.id);
-      existing.home_zone_id = homeZoneId;
-    }
-    return existing;
+const CALLSIGN_RE = /^[A-Za-z0-9_.-]{3,24}$/;
+const PIN_RE = /^\d{4,8}$/;
+const clientIp = (req) => req.socket.remoteAddress || 'unknown';
+
+function validZoneId(id) {
+  const n = Number(id);
+  return Number.isInteger(n) && db.prepare('SELECT 1 FROM zones WHERE id = ?').get(n) ? n : null;
+}
+
+/**
+ * Creates a profile. One per person: the phone number (kept only as a keyed
+ * hash) and this browser's device token must both be unused.
+ */
+function registerAgent(req, res, body) {
+  // 30/hour: loose enough for a room of people on one community-centre
+  // connection, tight enough to make probing phone numbers slow.
+  rateLimit(`register:${clientIp(req)}`, 30, 60 * 60 * 1000, 'Too many sign-up attempts from this connection.');
+
+  const callsign = String(body.callsign || '').trim();
+  if (!CALLSIGN_RE.test(callsign)) {
+    throw httpError(400, 'Callsign must be 3–24 letters, numbers, dots, dashes or underscores. No real names.');
   }
+  const phone = normalizePhone(body.phone);
+  if (!phone) throw httpError(400, 'Enter a South African cellphone number, e.g. 082 123 4567.');
+  if (!PIN_RE.test(String(body.pin || ''))) throw httpError(400, 'PIN must be 4–8 digits.');
+  const avatar = AVATARS.includes(body.avatar) ? body.avatar : AVATARS[0];
+  const zoneId = validZoneId(body.home_zone_id);
+
+  const pHash = phoneHash(phone);
+  const dHash = ensureDevice(req, res);
+  if (db.prepare('SELECT 1 FROM agents WHERE device_hash = ?').get(dHash)) {
+    throw httpError(409, 'This device already has a profile. Log in instead — each person gets one profile.');
+  }
+  if (db.prepare('SELECT 1 FROM agents WHERE phone_hash = ?').get(pHash)) {
+    throw httpError(409, 'That phone number already has a profile. Log in instead — each person gets one profile.');
+  }
+  if (db.prepare('SELECT 1 FROM agents WHERE callsign = ? COLLATE NOCASE').get(callsign)) {
+    throw httpError(409, 'That callsign is taken. Pick another one.');
+  }
+
   // ghost_id is derived from a random nonce, NOT from the callsign, so the
   // pseudonym can never be brute-forced back to a chosen name.
-  const gid = ghostId(clean + ':' + Date.now() + ':' + Math.random());
-  return db.prepare(
-    `INSERT INTO agents (callsign, ghost_id, home_zone_id) VALUES (?, ?, ?) RETURNING *`
-  ).get(clean, gid, homeZoneId ?? null);
+  const gid = ghostId(callsign + ':' + Date.now() + ':' + Math.random());
+  const agent = db.prepare(
+    `INSERT INTO agents (callsign, ghost_id, home_zone_id, phone_hash, device_hash, pin_hash, avatar)
+     VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`
+  ).get(callsign, gid, zoneId, pHash, dHash, hashPin(body.pin), avatar);
+  startSession(res, agent.id);
+  return agent;
 }
+
+function loginAgent(req, res, body) {
+  const callsign = String(body.callsign || '').trim();
+  const key = `login:${callsign.toLowerCase()}`;
+  rateLimit(key, 5, 15 * 60 * 1000, 'Too many wrong PINs for this callsign.');
+  const agent = db.prepare('SELECT * FROM agents WHERE callsign = ? COLLATE NOCASE').get(callsign);
+  if (!agent || !checkPin(String(body.pin || ''), agent.pin_hash)) {
+    throw httpError(401, 'Callsign or PIN is wrong.');
+  }
+  clearRateLimit(key);
+  ensureDevice(req, res);
+  startSession(res, agent.id);
+  return agent;
+}
+
+function siteStats() {
+  return db.prepare(`
+    SELECT COUNT(*)                                                AS drops,
+           COALESCE(SUM(CASE WHEN status = 'verified' THEN 1 END), 0) AS verified,
+           COALESCE(SUM(coins_awarded), 0)                          AS coins_paid,
+           (SELECT COUNT(*) FROM agents WHERE pin_hash IS NOT NULL) AS players
+      FROM reports`).get();
+}
+const broadcastStats = () => broadcast('stats', siteStats());
 
 function agentView(a) {
   const r = rankFor(a.xp);
+  const zone = a.home_zone_id ? db.prepare('SELECT name FROM zones WHERE id = ?').get(a.home_zone_id) : null;
   const stats = db.prepare(
     `SELECT COUNT(*) AS reports,
             SUM(CASE WHEN status = 'verified' THEN 1 ELSE 0 END) AS verified
@@ -94,25 +160,27 @@ function agentView(a) {
   ).get(a.id);
   return {
     callsign: a.callsign, ghost_id: a.ghost_id, coins: a.coin_balance,
-    xp: a.xp, ghost_mode: !!a.ghost_mode, home_zone_id: a.home_zone_id,
+    xp: a.xp, avatar: a.avatar, home_zone_id: a.home_zone_id, home_zone: zone?.name || null,
+    joined: a.created_at,
     reports: stats.reports || 0, verified: stats.verified || 0, ...r,
   };
 }
 
 // ── the reporting pipeline ─────────────────────────────────────────────────
 
-async function submitReport(body) {
+async function submitReport(agent, body) {
   const {
-    callsign, category, severity, narrative, lat, lng,
-    media = [], chat = [], home_zone_id,
+    category, severity, narrative, lat, lng, zone_id, section_id,
+    media = [], chat = [],
   } = body;
 
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
     const e = new Error('A map pin is required — drop a coordinate first.');
     e.status = 400; throw e;
   }
-  const agent = upsertAgent(callsign, home_zone_id);
-  const { zone, distance_m } = nearestZone(lat, lng);
+  // Category is shown to other agents on Agent Net, so only known values get in.
+  if (!CATEGORIES.includes(category)) throw httpError(400, 'Unknown report category.');
+  const { zone, section, distance_m } = resolveArea(lat, lng, zone_id, section_id);
 
   // Stage 2 — scrub the free-typed narrative + chat transcript.
   const combined = [narrative, ...chat.map((m) => m.body)].filter(Boolean).join(' • ');
@@ -123,12 +191,12 @@ async function submitReport(body) {
 
   const report = db.prepare(`
     INSERT INTO reports
-      (ref, agent_id, zone_id, category, severity, narrative_raw, narrative_safe,
+      (ref, agent_id, zone_id, section_id, category, severity, narrative_raw, narrative_safe,
        lat_exact, lng_exact, lat_fuzzed, lng_fuzzed, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted')
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted')
     RETURNING *`
   ).get(
-    caseRef(), agent.id, zone.id, category, Math.min(5, Math.max(1, Number(severity) || 3)),
+    caseRef(), agent.id, zone.id, section?.id ?? null, category, Math.min(5, Math.max(1, Number(severity) || 3)),
     combined || '(no narrative)', narrativeSafe || '(no narrative)',
     lat, lng, geo.lat_fuzzed, geo.lng_fuzzed
   );
@@ -145,6 +213,7 @@ async function submitReport(body) {
   // Stage 4 — destroy image metadata before a single byte hits disk.
   const mediaHashes = [];
   const mediaOut = [];
+  let mediaRejected = 0;
   for (const dataUrl of media.slice(0, 4)) {
     const b64 = String(dataUrl).split(',')[1] || '';
     const raw = Buffer.from(b64, 'base64');
@@ -152,6 +221,7 @@ async function submitReport(body) {
     const { buffer, removed, mime } = stripImageMetadata(raw);
     if (!buffer) {
       logSanitization(report.id, 'media', 'rejected_unknown_container', 'photo', 1);
+      mediaRejected++;
       continue;
     }
     const hash = sha256(buffer);
@@ -168,7 +238,7 @@ async function submitReport(body) {
   }
 
   // Stage 5 — build the outbound payload by allowlist, then trip-wire it.
-  const payload = buildMunicipalPayload(report, zone, mediaHashes);
+  const payload = buildMunicipalPayload(report, zone, mediaHashes, section);
   // String identifiers only. narrative_raw is deliberately absent: when a report
   // contains no PII its safe copy is legitimately identical to the raw one, and
   // comparing the two would block every honest, already-clean report. Surviving
@@ -202,15 +272,18 @@ async function submitReport(body) {
 
   const quote = quoteReward(report.category, report.severity, mediaHashes.length);
 
-  broadcast('report', { ref: report.ref, zone: zone.name, crew: zone.crew,
+  broadcast('report', { ref: report.ref, zone: zone.name, section: section?.name ?? null, crew: zone.crew,
     category: report.category, severity: report.severity, status: report.status });
   broadcast('leaderboard', { crews: crewLeaderboard() });
+  broadcastStats();
+  broadcast('net', { ref: report.ref }); // Agent Net: a new report to show
+  syncReport(report.id); syncPhotos(report.id); syncAgent(agent.id);
 
   return {
     ok: true,
     report: {
-      ref: report.ref, status: report.status, zone: zone.name, crew: zone.crew,
-      landmark: zone.landmark, pin_distance_m: distance_m,
+      ref: report.ref, status: report.status, zone: zone.name, section: section?.name ?? null,
+      crew: zone.crew, landmark: zone.landmark, pin_distance_m: distance_m,
       category: report.category, severity: report.severity,
     },
     reward_pending: quote,
@@ -225,8 +298,164 @@ async function submitReport(body) {
       tripwire: blocked ? { passed: false, violations: blocked } : { passed: true },
       forwarded_to: blocked ? [] : endpoints,
     },
+    media_rejected: mediaRejected,
     agent: agentView(db.prepare('SELECT * FROM agents WHERE id = ?').get(agent.id)),
   };
+}
+
+// ── Agent Net: reports shared between agents, with comments + reactions ─────
+
+const CATEGORIES = ['cable_theft', 'substation_vandalism', 'open_chamber', 'illegal_connection', 'streetlight_out'];
+const REACTIONS = ['seen', 'confirm', 'careful', 'respect']; // 👀 ✅ ⚠️ 💪
+const sqlToDate = (s) => new Date(String(s).replace(' ', 'T') + 'Z');
+
+/** True if the outbound tripwire fired: the scrubbed text may still hold PII, so it's never shared. */
+const isBlocked = (reportId) => Boolean(db.prepare(
+  `SELECT 1 FROM sanitization_log WHERE report_id = ? AND stage = 'tripwire'`).get(reportId));
+
+function reactionCounts(reportId) {
+  const out = Object.fromEntries(REACTIONS.map((k) => [k, 0]));
+  for (const r of db.prepare('SELECT kind, COUNT(*) AS n FROM report_reactions WHERE report_id = ? GROUP BY kind').all(reportId)) {
+    out[r.kind] = r.n;
+  }
+  return out;
+}
+
+const commentCount = (reportId) =>
+  db.prepare('SELECT COUNT(*) AS n FROM report_comments WHERE report_id = ?').get(reportId).n;
+
+function reportWithZone(where, ...args) {
+  return db.prepare(`SELECT r.*, z.name AS zone, z.crew, z.landmark, s.name AS section
+                       FROM reports r JOIN zones z ON z.id = r.zone_id
+                       LEFT JOIN sections s ON s.id = r.section_id WHERE ${where}`).get(...args);
+}
+
+/** What another agent may see of a report: blurred, scrubbed, no author. */
+function netItem(r, me) {
+  return {
+    ref: r.ref, category: r.category, severity: r.severity, status: r.status,
+    zone: r.zone, section: r.section, crew: r.crew, landmark: r.landmark,
+    lat: r.lat_fuzzed, lng: r.lng_fuzzed, precision_m: 150,
+    observed_window: fuzzTimestamp(sqlToDate(r.created_at)),
+    description: isBlocked(r.id) ? null : r.narrative_safe,
+    photos: db.prepare('SELECT stored_name FROM report_media WHERE report_id = ? ORDER BY id').all(r.id)
+      .map((m) => `/media/${m.stored_name}`),
+    reactions: reactionCounts(r.id),
+    my_reactions: db.prepare('SELECT kind FROM report_reactions WHERE report_id = ? AND agent_id = ?')
+      .all(r.id, me.id).map((x) => x.kind),
+    comments: commentCount(r.id),
+    mine: r.agent_id === me.id,
+  };
+}
+
+function commentView(c, report, me) {
+  return {
+    id: c.id,
+    author: c.agent_id === report.agent_id ? 'Reporter' : c.alias,
+    is_reporter: c.agent_id === report.agent_id,
+    is_me: c.agent_id === me.id,
+    body: c.body, created_at: c.created_at,
+  };
+}
+
+async function socialRoute(req, res, ref, action) {
+  const me = requireAgent(req);
+  const report = reportWithZone('r.ref = ?', ref);
+  if (!report) throw httpError(404, 'Unknown report.');
+
+  if (action === 'comments' && req.method === 'GET') {
+    const rows = db.prepare('SELECT * FROM report_comments WHERE report_id = ? ORDER BY id').all(report.id);
+    return json(res, 200, {
+      my_alias: report.agent_id === me.id ? 'Reporter' : threadAlias(report.id, me.id),
+      comments: rows.map((c) => commentView(c, report, me)),
+    });
+  }
+
+  if (action === 'comments' && req.method === 'POST') {
+    rateLimit(`comment:${me.id}`, 8, 60 * 1000, 'You are commenting very fast.');
+    const text = String((await readBody(req)).body || '').trim();
+    if (!text) throw httpError(400, 'Write something first.');
+    if (text.length > 500) throw httpError(400, 'Keep comments under 500 characters.');
+    // Same scrubber as reports: agents must not dox each other (or themselves).
+    const { clean, findings } = scrubText(text);
+    const c = db.prepare(`INSERT INTO report_comments (report_id, agent_id, alias, body)
+                          VALUES (?, ?, ?, ?) RETURNING *`).get(report.id, me.id, threadAlias(report.id, me.id), clean);
+    syncComment(c, report);
+    syncReport(report.id);
+    broadcast('comment', { ref, comments: commentCount(report.id) });
+    return json(res, 201, { comment: commentView(c, report, me), findings, comments: commentCount(report.id) });
+  }
+
+  if (action === 'react' && req.method === 'POST') {
+    const kind = (await readBody(req)).kind;
+    if (!REACTIONS.includes(kind)) throw httpError(400, 'Unknown reaction.');
+    const had = db.prepare('SELECT 1 FROM report_reactions WHERE report_id = ? AND agent_id = ? AND kind = ?')
+      .get(report.id, me.id, kind);
+    if (had) db.prepare('DELETE FROM report_reactions WHERE report_id = ? AND agent_id = ? AND kind = ?').run(report.id, me.id, kind);
+    else db.prepare('INSERT INTO report_reactions (report_id, agent_id, kind) VALUES (?, ?, ?)').run(report.id, me.id, kind);
+    const reactions = reactionCounts(report.id);
+    syncReport(report.id);
+    broadcast('reaction', { ref, reactions });
+    return json(res, 200, { reactions, mine: !had });
+  }
+
+  throw httpError(405, 'Method not allowed.');
+}
+
+// ── Supabase backup rows (safe fields only — see src/supabase.mjs) ─────────
+
+function syncReport(reportId) {
+  if (!CLOUD_ENABLED) return;
+  const r = reportWithZone('r.id = ?', reportId);
+  queueRow('gp_reports', {
+    ref: r.ref, category: r.category, severity: r.severity, status: r.status,
+    zone: r.zone, crew: r.crew, landmark: r.landmark,
+    lat_blurred: r.lat_fuzzed, lng_blurred: r.lng_fuzzed, precision_m: 150,
+    observed_window: fuzzTimestamp(sqlToDate(r.created_at)),
+    description: isBlocked(r.id) ? null : r.narrative_safe,
+    photo_paths: db.prepare('SELECT stored_name FROM report_media WHERE report_id = ? ORDER BY id').all(r.id)
+      .map((m) => `reports/${r.ref}/${m.stored_name}`),
+    coins_awarded: r.coins_awarded, verified_by: r.verified_by,
+    verified_at: r.verified_at ? sqlToDate(r.verified_at).toISOString() : null,
+    reactions: reactionCounts(r.id), comment_count: commentCount(r.id),
+    updated_at: new Date().toISOString(),
+  }, 'ref');
+}
+
+function syncAgent(agentId) {
+  if (!CLOUD_ENABLED) return;
+  const a = db.prepare(`SELECT a.*, z.name AS zone FROM agents a LEFT JOIN zones z ON z.id = a.home_zone_id
+                         WHERE a.id = ?`).get(agentId);
+  queueRow('gp_agents', {
+    ghost_id: a.ghost_id, avatar: a.avatar, rank: a.rank, xp: a.xp, coins: a.coin_balance,
+    home_zone: a.zone, joined_at: sqlToDate(a.created_at).toISOString(), updated_at: new Date().toISOString(),
+  }, 'ghost_id');
+}
+
+function syncComment(c, report) {
+  if (!CLOUD_ENABLED) return;
+  queueRow('gp_comments', {
+    id: c.id, report_ref: report.ref, alias: c.alias, is_reporter: c.agent_id === report.agent_id,
+    body: c.body, created_at: sqlToDate(c.created_at).toISOString(),
+  }, 'id');
+}
+
+function syncPhotos(reportId) {
+  if (!CLOUD_ENABLED) return;
+  const { ref } = db.prepare('SELECT ref FROM reports WHERE id = ?').get(reportId);
+  for (const m of db.prepare('SELECT stored_name FROM report_media WHERE report_id = ?').all(reportId)) {
+    queuePhoto(`reports/${ref}/${m.stored_name}`, m.stored_name);
+  }
+}
+
+/** First run with Supabase configured: queue everything that already exists. */
+function backfillCloud() {
+  if (!CLOUD_ENABLED || db.prepare('SELECT COUNT(*) AS n FROM cloud_outbox').get().n) return;
+  for (const { id } of db.prepare('SELECT id FROM agents').all()) syncAgent(id);
+  for (const { id } of db.prepare('SELECT id FROM reports ORDER BY id').all()) { syncReport(id); syncPhotos(id); }
+  for (const c of db.prepare('SELECT * FROM report_comments ORDER BY id').all()) {
+    syncComment(c, db.prepare('SELECT ref, agent_id FROM reports WHERE id = ?').get(c.report_id));
+  }
 }
 
 /** Simulates a City Power / SAPS controller confirming the intel was real. */
@@ -239,6 +468,8 @@ function verifyReport(ref, authority = 'City Power Control', outcome = 'verified
     db.prepare(`UPDATE reports SET status = 'rejected', verified_by = ?,
                 verified_at = datetime('now') WHERE id = ?`).run(authority, report.id);
     broadcast('verified', { ref, outcome: 'rejected' });
+    broadcastStats();
+    syncReport(report.id);
     return { ok: true, outcome: 'rejected', ref };
   }
 
@@ -255,15 +486,22 @@ function verifyReport(ref, authority = 'City Power Control', outcome = 'verified
     .run(report.zone_id);
 
   const zone = db.prepare('SELECT * FROM zones WHERE id = ?').get(report.zone_id);
+  // No agent identifier in the broadcast: linking case refs to ghost handles
+  // publicly would let anyone map one player's reports. Each client checks its
+  // own balance via /api/me instead.
   broadcast('verified', { ref, outcome: 'verified', coins, zone: zone.name, crew: zone.crew });
   broadcast('leaderboard', { crews: crewLeaderboard() });
+  broadcastStats();
+  syncReport(report.id); syncAgent(report.agent_id);
 
   const agent = db.prepare('SELECT * FROM agents WHERE id = ?').get(report.agent_id);
   return {
     ok: true, outcome: 'verified', ref, coins, xp, balance,
     rank: progression.rank, badge: progression.badge,
     rank_up: progression.progress === 100 || progression.xp_to_next === 0,
-    agent: agentView(agent),
+    // Unauthenticated endpoint (stands in for the municipal control room), so
+    // only the public ghost handle — never the callsign, which is a login name.
+    agent: { ghost_id: agent.ghost_id },
     verified_by: authority,
   };
 }
@@ -272,9 +510,10 @@ function reportDossier(ref) {
   const r = db.prepare('SELECT * FROM reports WHERE ref = ?').get(ref);
   if (!r) return null;
   const zone = db.prepare('SELECT * FROM zones WHERE id = ?').get(r.zone_id);
+  const section = r.section_id ? db.prepare('SELECT name FROM sections WHERE id = ?').get(r.section_id) : null;
   return {
     ref: r.ref, status: r.status, category: r.category, severity: r.severity,
-    zone: zone.name, crew: zone.crew, created_at: r.created_at,
+    zone: zone.name, section: section?.name ?? null, crew: zone.crew, created_at: r.created_at,
     coins_awarded: r.coins_awarded, verified_by: r.verified_by,
     narrative_safe: r.narrative_safe,
     // Deliberately absent: narrative_raw, exact coordinates, agent identity.
@@ -289,13 +528,13 @@ function reportDossier(ref) {
 // ── routes ─────────────────────────────────────────────────────────────────
 
 const routes = {
-  'GET /api/bootstrap': (req, res, url) => {
-    const callsign = url.searchParams.get('callsign');
-    const agent = callsign
-      ? db.prepare('SELECT * FROM agents WHERE callsign = ?').get(callsign.trim())
-      : null;
+  'GET /api/bootstrap': (req, res) => {
+    const agent = sessionAgent(req);
     json(res, 200, {
+      stats: siteStats(),
+      avatars: AVATARS,
       zones: zoneLeaderboard(),
+      sections: db.prepare('SELECT id, zone_id, name FROM sections ORDER BY zone_id, sort, id').all(),
       catalogue: CATALOGUE,
       ranks: RANKS,
       crews: crewLeaderboard(),
@@ -318,22 +557,70 @@ const routes = {
     });
   },
 
-  'POST /api/agent': async (req, res) => {
+  // ── profiles ──
+  'POST /api/register': async (req, res) => {
     const body = await readBody(req);
-    const a = upsertAgent(body.callsign, body.home_zone_id);
-    json(res, 200, { agent: agentView(a) });
+    const a = registerAgent(req, res, body);
+    broadcastStats();
+    syncAgent(a.id);
+    json(res, 201, { agent: agentView(a) });
   },
 
-  'POST /api/agent/ghost-mode': async (req, res) => {
+  'POST /api/login': async (req, res) => {
     const body = await readBody(req);
-    const a = upsertAgent(body.callsign);
-    db.prepare('UPDATE agents SET ghost_mode = ? WHERE id = ?').run(body.on ? 1 : 0, a.id);
+    json(res, 200, { agent: agentView(loginAgent(req, res, body)) });
+  },
+
+  'POST /api/logout': (req, res) => {
+    endSession(req, res);
+    json(res, 200, { ok: true });
+  },
+
+  'GET /api/me': (req, res) => json(res, 200, { agent: agentView(requireAgent(req)) }),
+
+  'POST /api/profile': async (req, res) => {
+    const a = requireAgent(req);
+    const body = await readBody(req);
+    if (body.avatar !== undefined) {
+      if (!AVATARS.includes(body.avatar)) throw httpError(400, 'Pick one of the listed avatars.');
+      db.prepare('UPDATE agents SET avatar = ? WHERE id = ?').run(body.avatar, a.id);
+    }
+    if (body.home_zone_id !== undefined) {
+      db.prepare('UPDATE agents SET home_zone_id = ? WHERE id = ?').run(validZoneId(body.home_zone_id), a.id);
+    }
+    syncAgent(a.id);
     json(res, 200, { agent: agentView(db.prepare('SELECT * FROM agents WHERE id = ?').get(a.id)) });
   },
 
+  'GET /api/stats': (req, res) => json(res, 200, siteStats()),
+
+  'GET /api/cloud/status': (req, res) => json(res, 200, cloudStatus()),
+
+  // Agent Net feed: 20 reports at a time, newest first. Agents only.
+  'GET /api/net': (req, res, url) => {
+    const me = requireAgent(req);
+    const before = Number(url.searchParams.get('before')) || Number.MAX_SAFE_INTEGER;
+    const rows = db.prepare(`SELECT r.*, z.name AS zone, z.crew, z.landmark, s.name AS section
+                               FROM reports r JOIN zones z ON z.id = r.zone_id
+                               LEFT JOIN sections s ON s.id = r.section_id
+                              WHERE r.id < ? ORDER BY r.id DESC LIMIT 20`).all(before);
+    json(res, 200, {
+      items: rows.map((r) => netItem(r, me)),
+      next: rows.length === 20 ? rows[rows.length - 1].id : null,
+    });
+  },
+
+  'GET /api/net/item': (req, res, url) => {
+    const me = requireAgent(req);
+    const r = reportWithZone('r.ref = ?', String(url.searchParams.get('ref') || ''));
+    if (!r) throw httpError(404, 'Unknown report.');
+    json(res, 200, { item: netItem(r, me) });
+  },
+
   'POST /api/reports': async (req, res) => {
+    const agent = requireAgent(req);
     const body = await readBody(req);
-    json(res, 201, await submitReport(body));
+    json(res, 201, await submitReport(agent, body));
   },
 
   'POST /api/verify': async (req, res) => {
@@ -344,9 +631,10 @@ const routes = {
   'GET /api/feed': (req, res) => {
     const rows = db.prepare(`
       SELECT r.ref, r.category, r.severity, r.status, r.created_at, r.coins_awarded,
-             z.name AS zone, z.crew,
+             z.name AS zone, z.crew, s.name AS section,
              (SELECT COUNT(*) FROM report_media m WHERE m.report_id = r.id) AS media
         FROM reports r JOIN zones z ON z.id = r.zone_id
+        LEFT JOIN sections s ON s.id = r.section_id
        ORDER BY r.id DESC LIMIT 25`).all();
     json(res, 200, { feed: rows });
   },
@@ -363,10 +651,8 @@ const routes = {
     json(res, 200, { hot: hotZonesNear(lat, lng, radius) });
   },
 
-  'GET /api/wallet': (req, res, url) => {
-    const callsign = url.searchParams.get('callsign');
-    const a = db.prepare('SELECT * FROM agents WHERE callsign = ?').get(String(callsign || '').trim());
-    if (!a) return json(res, 404, { error: 'no such agent' });
+  'GET /api/wallet': (req, res) => {
+    const a = requireAgent(req);
     json(res, 200, {
       agent: agentView(a),
       ledger: db.prepare('SELECT delta, reason, balance_after, created_at FROM ledger WHERE agent_id = ? ORDER BY id DESC LIMIT 30').all(a.id),
@@ -376,12 +662,12 @@ const routes = {
   },
 
   'POST /api/redeem': async (req, res) => {
+    const a = requireAgent(req);
     const body = await readBody(req);
-    const a = db.prepare('SELECT * FROM agents WHERE callsign = ?').get(String(body.callsign || '').trim());
-    if (!a) return json(res, 404, { error: 'no such agent' });
     try {
       const voucher = redeem(a.id, body.sku);
       broadcast('redeem', { ghost_id: a.ghost_id, label: voucher.label });
+      syncAgent(a.id);
       json(res, 200, {
         ok: true, voucher,
         agent: agentView(db.prepare('SELECT * FROM agents WHERE id = ?').get(a.id)),
@@ -402,13 +688,15 @@ const routes = {
 
   'POST /api/escape/finish': async (req, res) => {
     const body = await readBody(req);
-    db.prepare(`UPDATE escape_sessions SET clues_found = ?, solved = ?, seconds_left = ?,
-                ended_at = datetime('now') WHERE id = ?`)
+    // Each session can be finished (and pay out) once.
+    const { changes } = db.prepare(`UPDATE escape_sessions SET clues_found = ?, solved = ?, seconds_left = ?,
+                ended_at = datetime('now') WHERE id = ? AND ended_at IS NULL`)
       .run(body.clues_found | 0, body.solved ? 1 : 0, body.seconds_left | 0, body.id | 0);
-    if (body.solved && body.callsign) {
-      const a = upsertAgent(body.callsign);
+    const a = sessionAgent(req);
+    if (changes && body.solved && a) {
       creditAgent(a.id, 60, 'blackout_escape_room');
       awardXp(a.id, 40);
+      syncAgent(a.id);
     }
     json(res, 200, {
       ok: true,
@@ -451,6 +739,11 @@ function escapeClues() {
   ];
 }
 
+// Admin dashboard, City Power / SAPS partner portal, public impact page.
+Object.assign(routes, staffRoutes({
+  json, readBody, verifyReport, clientIp, liveViewers: () => streams.size,
+}));
+
 // ── OpenStreetMap tile proxy ───────────────────────────────────────────────
 // The browser never talks to OSM directly: if it did, the tile server would
 // log the reporter's IP next to the exact streets they zoomed into. Tiles are
@@ -459,7 +752,7 @@ function escapeClues() {
 const TILE_DIR = join(DATA_DIR, 'tiles');
 const TILE_BBOX = { n: -26.15, s: -26.34, w: 27.72, e: 28.03 };
 const TILE_ZOOM = [11, 18];
-const TILE_UA = 'MsotraGameplayLab/1.0 (community civic-reporting demo; tile cache)';
+const TILE_UA = 'GhostPuppyGameStudio/1.0 (community civic-reporting demo; tile cache)';
 const inflight = new Map();
 
 const lng2x = (lng, z) => Math.floor(((lng + 180) / 360) * 2 ** z);
@@ -488,16 +781,21 @@ async function serveTile(pathname, res) {
           headers: { 'user-agent': TILE_UA }, signal: AbortSignal.timeout(8000),
         });
         if (!r.ok) throw new Error(`tile upstream ${r.status}`);
+        tileStats.fetched++; tileStats.last_ok = new Date().toISOString();
         const data = Buffer.from(await r.arrayBuffer());
         await mkdir(dirname(file), { recursive: true });
         await writeFile(file, data);
         return data;
       })().finally(() => inflight.delete(key)));
     }
-    buf = await inflight.get(key).catch(() => null);
+    buf = await inflight.get(key).catch((err) => {
+      tileStats.failed++; tileStats.last_error = { at: new Date().toISOString(), message: err.message };
+      return null;
+    });
     // Offline and never cached: 503 tells the client to fall back to the grid map.
     if (!buf) return json(res, 503, { error: 'tile unavailable offline' });
   }
+  tileStats.served++;
   res.writeHead(200, {
     'content-type': 'image/png', 'content-length': buf.length,
     'cache-control': 'public, max-age=604800',
@@ -525,6 +823,9 @@ const server = createServer(async (req, res) => {
 
     if (routes[key]) return await routes[key](req, res, url);
 
+    const social = url.pathname.match(/^\/api\/reports\/(GG-[0-9A-F]{6})\/(comments|react)$/);
+    if (social) return await socialRoute(req, res, social[1], social[2]);
+
     if (req.method === 'GET' && url.pathname.startsWith('/api/case/')) {
       const dossier = reportDossier(decodeURIComponent(url.pathname.slice('/api/case/'.length)));
       return dossier ? json(res, 200, dossier) : json(res, 404, { error: 'unknown case ref' });
@@ -535,9 +836,16 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && url.pathname.startsWith('/media/')) {
-      const name = normalize(url.pathname.slice('/media/'.length)).replace(/^(\.\.[/\\])+/, '');
+      // Evidence photos are for logged-in agents only (they're metadata-free,
+      // but still shouldn't be browsable by anyone who guesses a case ref).
+      // Portal staff (admin / partner) may also view them to verify a case.
+      if (!staffRole(req)) requireAgent(req);
+      const name = url.pathname.slice('/media/'.length);
+      if (!/^GG-[0-9A-F]{6}-\d\.(jpg|png)$/.test(name)) return json(res, 404, { error: 'not found' });
       const buf = await readFile(join(MEDIA_DIR, name));
-      res.writeHead(200, { 'content-type': MIME[extname(name)] || 'application/octet-stream' });
+      res.writeHead(200, {
+        'content-type': MIME[extname(name)], 'cache-control': 'private, max-age=86400',
+      });
       return res.end(buf);
     }
 
@@ -558,7 +866,12 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`\n  ⚡ MSOTRA GAMEPLAY LAB — Grid Guardians`);
+  console.log(`\n  ⚡ GHOST PUPPY GAME STUDIO — Grid Guardians`);
   console.log(`  ➜  http://localhost:${PORT}`);
-  console.log(`  Ghost Agent: ARMED  |  DB: data/msotra.db\n`);
+  console.log(`  Ghost Agent: ARMED  |  DB: data/msotra.db`);
+  console.log(CLOUD_ENABLED
+    ? `  Supabase: ON — backing up anonymised data + cleaned photos\n`
+    : `  Supabase: off (add SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY to .env to enable)\n`);
+  backfillCloud();
+  startCloudSync();
 });

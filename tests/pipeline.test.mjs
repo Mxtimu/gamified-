@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   scrubText, fuzzGeo, stripImageMetadata, buildMunicipalPayload,
-  assertNoLeak, ghostId, MUNICIPAL_ALLOWLIST,
+  assertNoLeak, ghostId, threadAlias, MUNICIPAL_ALLOWLIST,
 } from '../src/ghost.mjs';
 
 test('scrubText removes SA phone numbers, ID numbers, emails and self-identification', () => {
@@ -143,4 +143,14 @@ test('ghost handles are stable per seed and unlinkable across agents', () => {
   assert.equal(ghostId('seed-1'), ghostId('seed-1'));
   assert.notEqual(ghostId('seed-1'), ghostId('seed-2'));
   assert.match(ghostId('seed-1'), /^GHOST-[0-9A-F]{6}$/);
+});
+
+test('Agent Net aliases are stable within a thread and unlinkable across threads', () => {
+  assert.equal(threadAlias(7, 42), threadAlias(7, 42), 'same agent, same thread → same alias');
+  assert.notEqual(threadAlias(7, 42), threadAlias(7, 43), 'different agents in one thread differ');
+  // Across 50 threads, one agent's aliases should almost never repeat — repeats would let
+  // someone follow them from report to report.
+  const mine = new Set(Array.from({ length: 50 }, (_, i) => threadAlias(i + 1, 42)));
+  assert.ok(mine.size >= 49, `aliases across threads are distinct (${mine.size}/50)`);
+  assert.match(threadAlias(1, 1), /^[A-Z][a-z]+-[0-9A-F]{4}$/);
 });

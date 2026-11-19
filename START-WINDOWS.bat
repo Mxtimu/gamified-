@@ -7,7 +7,7 @@ if errorlevel 1 goto nonode
 
 echo.
 echo   ==========================================
-echo    MSOTRA GAMEPLAY LAB - Grid Guardians
+echo    GHOST PUPPY GAME STUDIO - Grid Guardians
 echo   ==========================================
 echo.
 echo   Starting the server...
